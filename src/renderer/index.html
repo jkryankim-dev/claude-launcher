@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude 런처</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><span class="app-name">Claude 런처</span><span id="ver" class="ver"></span></div>
+  <div id="chips" class="chips"></div>
+  <div class="top-actions">
+    <button id="btn-update" class="btn">업데이트 확인<span id="upd-badge" class="badge" hidden></span></button>
+    <button id="btn-settings" class="btn">설정</button>
+  </div>
+</header>
+<div id="banner" class="banner" hidden></div>
+<section class="toolbar">
+  <button id="btn-add" class="btn">폴더 추가</button>
+  <button id="btn-split" class="btn">선택한 폴더를 분할 창으로 열기</button>
+  <span id="sel-count" class="muted"></span>
+  <span class="grow"></span>
+  <span class="legend"><i class="dot split"></i>분담<i class="dot claude"></i>Claude만<i class="dot glm"></i>GLM만</span>
+</section>
+<div class="list-head" aria-hidden="true"><span></span><span>프로젝트</span><span>메인 (Claude 구독)</span><span>작업자 (GLM, z.ai)</span><span>열기</span><span></span></div>
+<main id="list" class="list"></main>
+<footer id="foot" class="foot"></footer>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="dlg" class="dlg"></dialog>
+<dialog id="dlg-out" class="dlg"></dialog>
+<script src="app.js"></script>
+</body>
+</html>

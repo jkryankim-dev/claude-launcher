@@ -1,0 +1,47 @@
+{
+  "name": "claude-launcher",
+  "productName": "Claude Launcher",
+  "version": "1.0.0",
+  "description": "폴더별 모델·effort로 Claude Code를 여는 런처 — 메인(Claude 구독) + 작업자(GLM) 분담",
+  "main": "src/main.js",
+  "private": true,
+  "author": "claude-launcher",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/OWNER/claude-launcher.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/glm-run.test.mjs test/core.test.js test/session.test.mjs",
+    "dist": "electron-builder --win nsis --publish never",
+    "release": "electron-builder --win nsis --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9"
+  },
+  "devDependencies": {
+    "electron": "^44.4.5",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "dev.claude-launcher.app",
+    "productName": "Claude Launcher",
+    "directories": { "output": "dist" },
+    "files": ["src/**/*", "package.json"],
+    "extraResources": [
+      { "from": "skills", "to": "skills" },
+      { "from": "runtime", "to": "runtime" },
+      { "from": "snippets", "to": "snippets" },
+      { "from": "catalog.json", "to": "catalog.json" }
+    ],
+    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "artifactName": "Claude-Launcher-Setup-${version}.${ext}",
+      "deleteAppDataOnUninstall": false
+    },
+    "publish": [{ "provider": "github", "releaseType": "release" }]
+  }
+}
