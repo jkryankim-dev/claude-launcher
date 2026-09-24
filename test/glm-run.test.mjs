@@ -305,3 +305,27 @@ test('Windows: 런처가 DPAPI로 저장한 키로 작업자 실행 (PowerShell 
   assert.equal(r.code, 0, r.out + r.err);
   assert.equal(readLog(log).env.ANTHROPIC_AUTH_TOKEN, 'dpapi-key-5678');
 });
+
+test('병렬 실행: 마무리 중에 끼어든 늦은 실행의 변경도 가져가지 않음', async () => {
+  const dir = makeRepo();
+  const s1 = spec(dir, 'q1.md'), s2 = spec(dir, 'q2.md');
+  const go = (s, env) => new Promise(res => {
+    const c = spawn(process.execPath, [RUN, s], { cwd: dir, env: baseEnv(env) });
+    let out = '';
+    c.stdout.on('data', d => { out += d; });
+    c.on('close', code => res({ code, out }));
+  });
+  const pa = go(s1, { MOCK_FILES: 'src/a.ts', GLM_TEST_HOLD_MS: '5000' }); // A: 작업자는 바로 끝나고 마무리 직전 5초 대기
+  const runs = path.join(dir, '.glm/runs');
+  for (let i = 0; i < 300; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    try { const m = readLog(path.join(runs, fs.readdirSync(runs)[0], 'meta.json')); if (m.sessionId) break; } catch { /* 아직 */ }
+  }
+  await new Promise(r => setTimeout(r, 800));
+  const b = await go(s2, { MOCK_FILES: 'src/b.ts' }); // B: A의 마무리 대기 중에 시작해 b.ts를 고침
+  const a = await pa;
+  assert.match(a.out, /M src\/a\.ts/, a.out);
+  assert.doesNotMatch(a.out, /src\/b\.ts/, a.out);
+  assert.match(b.out, /M src\/b\.ts/, b.out);
+  assert.doesNotMatch(b.out, /src\/a\.ts/, b.out);
+});

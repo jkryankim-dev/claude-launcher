@@ -909,6 +909,7 @@ async function cmdRun(specPath, o, parent = null) {
   fs.writeFileSync(path.join(runDir, 'spec.md'), spec.raw);
   const prompt = parent ? resumePrompt(spec, cfg, ctx) : buildPrompt(spec, cfg, ctx);
   fs.writeFileSync(path.join(runDir, 'prompt.md'), prompt);
+  const snapAt = Date.now();
   const snap = snapshotTree(ctx, runDir, 'before');
   const specAbs = path.resolve(specPath);
   const meta = {
@@ -969,8 +970,11 @@ async function cmdRun(specPath, o, parent = null) {
   });
   meta.cause = meta.status === 'done' ? null : explainError(st, cfg);
 
+  const hold = Number(E.GLM_TEST_HOLD_MS || 0); // 테스트 전용: 마무리 직전 대기(병렬 경합 재현)
+  if (hold > 0) await sleep(hold);
   const tree2 = snap ? snapshotTree(ctx, runDir, 'after') : null;
-  const overlap = ctx.isGit ? overlappingRuns(ctx, id, Date.parse(meta.startedAt), t1) : [];
+  // 겹침 판정 구간 = 실행 전 스냅샷 시작 ~ 실행 후 스냅샷 끝 (작업자가 끝난 뒤 마무리 중에 끼어든 실행도 포함)
+  const overlap = ctx.isGit ? overlappingRuns(ctx, id, snapAt, Date.now()) : [];
   meta.changed = collectChanges(ctx, snap, tree2, st.touched, overlap, compileScope(scope, ctx));
   if (verify.length && role === 'edit' && !st.interrupted && (meta.status === 'done' || meta.changed.files.length)) {
     out(`[GLM] 검증 실행: ${verify.join(' && ')}`);
