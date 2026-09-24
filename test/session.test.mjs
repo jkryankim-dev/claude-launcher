@@ -1,5 +1,6 @@
 // runtime/start-session.mjs 테스트: 모드별 claude 인자·환경, --dry-run
 import { test } from 'node:test';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
@@ -68,4 +69,23 @@ test('시작기 --dry-run: 세션 파일을 읽어 실행할 내용을 보여 �
   assert.doesNotMatch(r.stdout, /secret-zk/);
   const j = JSON.parse(r.stdout.slice(r.stdout.indexOf('{')));
   assert.deepEqual(j.args, ['--model', 'glm-5.3', '--effort', 'max']);
+});
+
+test('Windows: 런처가 DPAPI로 저장한 키를 시작기가 읽음 (PowerShell 7 환경 흉내)', { skip: process.platform !== 'win32' }, () => {
+  const secrets = createRequire(import.meta.url)('../src/core/secrets.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'session-dpapi-'));
+  fs.mkdirSync(path.join(home, 'sessions'));
+  const keyFile = path.join(home, 'zai-key.dpapi');
+  secrets.saveKey(keyFile, 'real-key-5678');
+  fs.writeFileSync(path.join(home, 'sessions', 'p2.json'), JSON.stringify({ ...base, id: 'p2', mode: 'glm', path: home, keyFile }));
+  const r = spawnSync(process.execPath, [SCRIPT, '--project', 'p2', '--home', home, '--dry-run'], { encoding: 'utf8', env: { ...process.env, PSModulePath: 'C:\\Program Files\\PowerShell\\7\\Modules;C:\\nope\\Modules' } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /"ANTHROPIC_AUTH_TOKEN": "\*\*\*"/);
+});
+
+test('시작기 --dry-run: 실패하면 셸을 열지 않고 종료 코드 1', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'session-fail-'));
+  const r = spawnSync(process.execPath, [SCRIPT, '--project', 'nope', '--home', home, '--dry-run'], { encoding: 'utf8' });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /세션 설정을 찾을 수 없습니다/);
 });

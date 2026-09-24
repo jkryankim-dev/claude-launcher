@@ -15,7 +15,8 @@
     "start": "electron .",
     "test": "node --test test/glm-run.test.mjs test/core.test.js test/session.test.mjs",
     "dist": "electron-builder --win nsis --publish never",
-    "release": "electron-builder --win nsis --publish always"
+    "release": "electron-builder --win nsis --publish always",
+    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=test-results.tap test/glm-run.test.mjs test/core.test.js test/session.test.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9"
@@ -27,21 +28,52 @@
   "build": {
     "appId": "dev.claude-launcher.app",
     "productName": "Claude Launcher",
-    "directories": { "output": "dist" },
-    "files": ["src/**/*", "package.json"],
-    "extraResources": [
-      { "from": "skills", "to": "skills" },
-      { "from": "runtime", "to": "runtime" },
-      { "from": "snippets", "to": "snippets" },
-      { "from": "catalog.json", "to": "catalog.json" }
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
     ],
-    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
+    "extraResources": [
+      {
+        "from": "skills",
+        "to": "skills"
+      },
+      {
+        "from": "runtime",
+        "to": "runtime"
+      },
+      {
+        "from": "snippets",
+        "to": "snippets"
+      },
+      {
+        "from": "catalog.json",
+        "to": "catalog.json"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
       "artifactName": "Claude-Launcher-Setup-${version}.${ext}",
       "deleteAppDataOnUninstall": false
     },
-    "publish": [{ "provider": "github", "releaseType": "release" }]
+    "publish": [
+      {
+        "provider": "github",
+        "releaseType": "release"
+      }
+    ]
   }
 }

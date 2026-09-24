@@ -137,12 +137,17 @@ test('sync: 바뀐 파일만 복사', () => {
   assert.throws(() => sync.syncDir(path.join(a, 'none'), b), /원본/);
 });
 
-test('secrets: 저장·읽기·삭제 (Windows는 DPAPI, 그 밖은 개발용 평문)', () => {
+test('secrets: 저장·읽기·삭제 (Windows는 DPAPI, 그 밖은 개발용 평문)', t => {
+  const prev = process.env.PSModulePath;
+  process.env.PSModulePath = 'C:\\Program Files\\PowerShell\\7\\Modules;C:\\nope\\Modules'; // PowerShell 7에서 물려받은 경우 흉내
+  t.after(() => { if (prev === undefined) delete process.env.PSModulePath; else process.env.PSModulePath = prev; });
   const f = path.join(tmp(), 'zai-key.dpapi');
   assert.equal(secrets.hasKey(f), false);
   secrets.saveKey(f, '  test.key-1234  ');
   assert.equal(secrets.hasKey(f), true);
-  if (process.platform === 'win32') assert.ok(!fs.readFileSync(f, 'utf8').includes('test.key-1234'), '평문으로 저장하면 안 됨');
+  const saved = fs.readFileSync(f, 'utf8');
+  assert.ok(saved.startsWith(process.platform === 'win32' ? 'dpapi:' : 'plain:'), saved.slice(0, 12));
+  if (process.platform === 'win32') assert.ok(!saved.includes('test.key-1234'), '평문으로 저장하면 안 됨');
   assert.equal(secrets.loadKey(f), 'test.key-1234');
   assert.throws(() => secrets.saveKey(f, ''), /비어/);
   assert.throws(() => secrets.saveKey(f, 'a b'), /공백/);

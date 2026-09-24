@@ -1,3 +1,4 @@
 node_modules/
 dist/
 .glm/
+test-results.tap

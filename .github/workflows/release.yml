@@ -17,8 +17,8 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       - name: 버전과 저장소 설정
@@ -30,7 +30,10 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: 테스트
         if: ${{ !inputs.skip_tests }}
-        run: npm test
+        run: npm run test:ci
+      - name: 실패한 테스트 공개 표시
+        if: ${{ failure() && !inputs.skip_tests }}
+        run: node test/ci-report.mjs test-results.tap
       - name: 빌드와 배포
         run: npx electron-builder --win nsis --publish always
         env:

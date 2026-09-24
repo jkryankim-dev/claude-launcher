@@ -135,9 +135,16 @@ function decryptKeyFile(file) {
   if (!raw) return '';
   if (raw.startsWith('plain:')) return raw.slice(6).trim();
   if (!IS_WIN) return '';
-  // Windows DPAPI(현재 사용자) — 런처가 ConvertFrom-SecureString으로 저장한 값
-  const ps = 'try{$s=ConvertTo-SecureString -String $env:CL_SECRET; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { env: { ...process.env, CL_SECRET: raw }, encoding: 'utf8', windowsHide: true, timeout: 30e3 });
+  // DPAPI(현재 사용자). "dpapi:<base64>"는 .NET ProtectedData로 직접 푼다(PowerShell 모듈 불필요). 그 밖은 예전 형식.
+  // PowerShell 7에서 물려받은 PSModulePath는 Windows PowerShell 5.1의 모듈 로드를 깨뜨리므로 지운다.
+  const env = {};
+  for (const [k, v] of Object.entries(process.env)) if (v !== undefined && k.toUpperCase() !== 'PSMODULEPATH') env[k] = v;
+  const dp = raw.startsWith('dpapi:');
+  env.CL_SECRET = dp ? raw.slice(6) : raw;
+  const ps = dp
+    ? "try{[void][Reflection.Assembly]::LoadWithPartialName('System.Security'); $b=[Security.Cryptography.ProtectedData]::Unprotect([Convert]::FromBase64String($env:CL_SECRET),$null,[Security.Cryptography.DataProtectionScope]::CurrentUser); [Console]::Out.Write([Text.Encoding]::UTF8.GetString($b))}catch{exit 1}"
+    : 'try{$s=ConvertTo-SecureString -String $env:CL_SECRET; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { env, encoding: 'utf8', windowsHide: true, timeout: 30e3 });
   return r.status === 0 ? String(r.stdout || '').trim() : '';
 }
 function findKey() {

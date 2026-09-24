@@ -1,5 +1,6 @@
 // glm-run.mjs 통합 테스트 — 가짜 claude(test/fixtures/mock-claude.mjs)로 실제 git 저장소에서 실행한다.
 import { test } from 'node:test';
+import { createRequire } from 'node:module';
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -291,4 +292,16 @@ test('링크·정션·짧은 이름 경로로 들어와도 저장소 안의 변�
   assert.equal(r.code, 0, r.out + r.err);
   assert.match(r.out, /M src\/a\.ts/);
   assert.doesNotMatch(r.out, /⚠ ?(범위 밖|저장소 밖)/, r.out);
+});
+
+test('Windows: 런처가 DPAPI로 저장한 키로 작업자 실행 (PowerShell 7 환경 흉내)', { skip: process.platform !== 'win32' }, () => {
+  const secrets = createRequire(import.meta.url)('../src/core/secrets.js');
+  const home = path.join(TMP, 'home-dpapi');
+  fs.mkdirSync(home, { recursive: true });
+  secrets.saveKey(path.join(home, 'zai-key.dpapi'), 'dpapi-key-5678');
+  const dir = makeRepo();
+  const log = path.join(TMP, 'log-dpapi.json');
+  const r = run([spec(dir)], dir, { ZAI_API_KEY: '', CLAUDE_LAUNCHER_HOME: home, MOCK_LOG: log, PSModulePath: 'C:\\Program Files\\PowerShell\\7\\Modules;C:\\nope\\Modules' });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal(readLog(log).env.ANTHROPIC_AUTH_TOKEN, 'dpapi-key-5678');
 });
