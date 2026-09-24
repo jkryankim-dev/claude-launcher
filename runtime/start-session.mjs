@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const IS_WIN = process.platform === 'win32';
 const ZAI_URL = 'https://api.z.ai/api/anthropic';
@@ -91,8 +91,8 @@ function readKey(file) {
   if (!raw) return '';
   if (raw.startsWith('plain:')) return raw.slice(6).trim();
   if (!IS_WIN) return '';
-  const ps = 'try{$e=[Console]::In.ReadToEnd().Trim(); $s=ConvertTo-SecureString -String $e; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { input: raw, encoding: 'utf8', windowsHide: true, timeout: 30e3 });
+  const ps = 'try{$s=ConvertTo-SecureString -String $env:CL_SECRET; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { env: { ...process.env, CL_SECRET: raw }, encoding: 'utf8', windowsHide: true, timeout: 30e3 });
   return r.status === 0 ? String(r.stdout || '').trim() : '';
 }
 function whereFirst(name) {
@@ -185,5 +185,6 @@ async function main() {
   process.exitCode = r.code;
 }
 
-const isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+function sameFile(a, b) { try { return fs.realpathSync(a) === fs.realpathSync(b); } catch { return false; } }
+const isMain = !!process.argv[1] && sameFile(path.resolve(process.argv[1]), fileURLToPath(import.meta.url));
 if (isMain) main().catch(e => { out(`✕ 시작기 오류: ${e?.stack || e}`); process.exitCode = 1; });

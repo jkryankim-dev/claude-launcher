@@ -240,7 +240,7 @@ test('조사(scan) 역할: 편집 도구 차단과 조사 규칙', () => {
 
 test('SKILL.md의 명세 템플릿이 경고 없이 해석됨', () => {
   const md = fs.readFileSync(path.join(ROOT, 'skills/glm-delegate/SKILL.md'), 'utf8');
-  const tpl = /~~~markdown\n([\s\S]*?)\n~~~/.exec(md)[1].replace('npx tsc --noEmit', 'node -e "process.exit(0)"');
+  const tpl = /~~~markdown\r?\n([\s\S]*?)\r?\n~~~/.exec(md)[1].replace('npx tsc --noEmit', 'node -e "process.exit(0)"');
   const dir = makeRepo();
   const r = run([spec(dir, 'tpl.md', tpl)], dir, { MOCK_FILES: 'src/a.ts' });
   assert.match(r.out, /\[GLM\] 시작 · \S+ · API 라우트 에러 응답을 apiError\(\)로 통일/);
@@ -254,7 +254,7 @@ test('--stop: 실행 중인 작업 중단', async () => {
   const exited = once(child, 'exit');
   const runs = path.join(dir, '.glm/runs');
   let meta = null;
-  for (let i = 0; i < 150 && !meta?.sessionId; i++) {
+  for (let i = 0; i < 300 && !meta?.sessionId; i++) {
     await new Promise(r => setTimeout(r, 100));
     try { const id = fs.readdirSync(runs)[0]; meta = readLog(path.join(runs, id, 'meta.json')); } catch { /* 아직 없음 */ }
   }
@@ -274,10 +274,21 @@ test('병렬 실행: 서로의 변경을 가져가지 않음', async () => {
     c.on('close', code => res({ code, out }));
   });
   const [a, b] = await Promise.all([
-    go(s1, { MOCK_FILES: 'src/a.ts', MOCK_SLOW: '3000' }),
-    go(s2, { MOCK_FILES: 'src/b.ts', MOCK_SLOW: '3000' }),
+    go(s1, { MOCK_FILES: 'src/a.ts', MOCK_SLOW: '6000' }),
+    go(s2, { MOCK_FILES: 'src/b.ts', MOCK_SLOW: '6000' }),
   ]);
   assert.match(a.out, /변경 1파일.*병렬 실행 중/, a.out);
   assert.match(a.out, /M src\/a\.ts/); assert.doesNotMatch(a.out, /src\/b\.ts/);
   assert.match(b.out, /M src\/b\.ts/); assert.doesNotMatch(b.out, /src\/a\.ts/);
+});
+
+test('링크·정션·짧은 이름 경로로 들어와도 저장소 안의 변경으로 인식', () => {
+  const dir = makeRepo();
+  const link = path.join(TMP, `link-${Date.now()}`);
+  fs.symlinkSync(dir, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const s = spec(link);
+  const r = run([path.join(link, s), '--cwd', link], TMP, { MOCK_FILES: 'src/a.ts' });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /M src\/a\.ts/);
+  assert.doesNotMatch(r.out, /⚠ ?(범위 밖|저장소 밖)/, r.out);
 });

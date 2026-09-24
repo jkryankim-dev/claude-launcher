@@ -1,14 +1,14 @@
 'use strict';
-// z.ai 키 저장: Windows는 DPAPI(현재 사용자 계정)로 암호화. 평문 키는 명령줄이 아닌 표준입력으로만 넘긴다.
+// z.ai 키 저장: Windows는 DPAPI(현재 사용자 계정)로 암호화. 평문 키는 명령줄이 아니라 자식 프로세스 환경변수(CL_SECRET)로만 넘긴다.
 const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 
 const IS_WIN = process.platform === 'win32';
-const PS_ENC = '$k=[Console]::In.ReadToEnd().Trim(); if(-not $k){exit 2}; $s=ConvertTo-SecureString -String $k -AsPlainText -Force; [Console]::Out.Write((ConvertFrom-SecureString -SecureString $s))';
-const PS_DEC = 'try{$e=[Console]::In.ReadToEnd().Trim(); $s=ConvertTo-SecureString -String $e; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
-function ps(script, input) {
-  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { input, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+const PS_ENC = '$k=$env:CL_SECRET; if(-not $k){exit 2}; $s=ConvertTo-SecureString -String $k -AsPlainText -Force; [Console]::Out.Write((ConvertFrom-SecureString -SecureString $s))';
+const PS_DEC = 'try{$s=ConvertTo-SecureString -String $env:CL_SECRET; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
+function ps(script, secret) {
+  return spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { env: { ...process.env, CL_SECRET: secret }, encoding: 'utf8', windowsHide: true, timeout: 30000 });
 }
 function saveKey(file, key) {
   key = String(key || '').trim();

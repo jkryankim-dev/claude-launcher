@@ -136,8 +136,8 @@ function decryptKeyFile(file) {
   if (raw.startsWith('plain:')) return raw.slice(6).trim();
   if (!IS_WIN) return '';
   // Windows DPAPI(현재 사용자) — 런처가 ConvertFrom-SecureString으로 저장한 값
-  const ps = 'try{$e=[Console]::In.ReadToEnd().Trim(); $s=ConvertTo-SecureString -String $e; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
-  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { input: raw, encoding: 'utf8', windowsHide: true, timeout: 30e3 });
+  const ps = 'try{$s=ConvertTo-SecureString -String $env:CL_SECRET; $b=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($s); [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)); [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b)}catch{exit 1}';
+  const r = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], { env: { ...process.env, CL_SECRET: raw }, encoding: 'utf8', windowsHide: true, timeout: 30e3 });
   return r.status === 0 ? String(r.stdout || '').trim() : '';
 }
 function findKey() {
@@ -193,12 +193,15 @@ function git(args, { cwd, env, input } = {}) {
   });
   return { ok: r.status === 0, out: r.stdout || '', err: r.stderr || '' };
 }
+// 짧은 이름(RUNNER~1)·정션·링크로 들어와도 git이 돌려주는 경로와 같은 형태가 되도록 실제 경로로 맞춘다
+function realDir(p) { try { return fs.realpathSync.native(p); } catch { return p; } }
 function repoCtx(cwdArg) {
-  const cwd = path.resolve(cwdArg || process.cwd());
-  if (!fs.existsSync(cwd)) die(`❌ 폴더가 없습니다: ${cwd}`);
+  const given = path.resolve(cwdArg || process.cwd());
+  if (!fs.existsSync(given)) die(`❌ 폴더가 없습니다: ${given}`);
+  const cwd = realDir(given);
   const top = git(['rev-parse', '--show-toplevel'], { cwd });
   if (!top.ok) return { cwd, root: cwd, isGit: false };
-  return { cwd, root: path.resolve(top.out.trim()), isGit: true };
+  return { cwd, root: realDir(path.resolve(top.out.trim())), isGit: true };
 }
 function ensureExclude(ctx) {
   if (!ctx.isGit) return;
@@ -660,7 +663,10 @@ function overlappingRuns(ctx, myId, t0, t1) {
   for (const id of listRuns(ctx).slice(-50)) {
     if (id === myId) continue;
     const m = readMeta(ctx, id);
-    if (!m?.startedAt) continue;
+    if (!m?.startedAt) {
+      try { if (fs.statSync(runDirOf(ctx, id)).mtimeMs >= t0) res.push(id); } catch { /* 없음 */ }
+      continue;
+    }
     const s = Date.parse(m.startedAt);
     const e = m.endedAt ? Date.parse(m.endedAt) : pidAlive(m.pid) ? Infinity : s;
     if (s < t1 && e > t0) res.push(id);
