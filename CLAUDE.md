@@ -4,7 +4,9 @@ Windows용 Electron 앱. 폴더별 모델·effort로 Claude Code를 연다. 메�
 
 ## 구조
 - `src/main.js` Electron 메인(IPC, 업데이트), `src/preload.js` 렌더러용 좁은 API
-- `src/renderer/` 빌드 도구 없는 HTML/CSS/JS
+- `src/renderer/` 빌드 도구 없는 HTML/CSS/JS. `terminal.js`는 런처 안 터미널(xterm.js 탭)
+- `src/core/ptyhost.js` 런처 안 터미널의 의사 터미널 세션 관리(@lydell/node-pty = 미리 빌드된 node-pty, 컴파일 불필요)
+- asar를 끈 이유: node-pty의 워커 스크립트·보조 실행 파일을 실제 파일 경로로 두기 위해. `build/installer.nsh`는 예전 버전의 app.asar를 지운다
 - `src/core/` Electron 없이 도는 순수 Node 모듈(테스트 대상). 로직은 여기에 둔다
 - `runtime/start-session.mjs` Windows Terminal 탭에서 실행되는 세션 시작기(앱이 `%APPDATA%\claude-launcher\runtime`에 복사)
 - `skills/glm-delegate/` GLM 위임 스킬(앱이 `~/.claude/skills`에 복사). `scripts/glm-run.mjs`는 의존성 없는 단일 파일

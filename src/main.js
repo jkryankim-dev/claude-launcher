@@ -19,6 +19,7 @@ const claudemd = require('./core/claudemd');
 const claudebin = require('./core/claudebin');
 const { runCapture, cleanEnv } = require('./core/proc');
 const { zaiRate } = require('./core/rate');
+const { createHost } = require('./core/ptyhost');
 const pkg = require('../package.json');
 
 app.setPath('userData', path.join(app.getPath('appData'), 'claude-launcher'));
@@ -48,6 +49,10 @@ let win = null;
 let lastChecks = null;
 let pendingCatalog = null;
 let autoUpdater = null;
+let ptyHost = null; // 런처 안 터미널 세션
+let ptyModule; // @lydell/node-pty (처음 쓸 때 불러옴)
+let ptyError = '';
+let allowClose = false;
 const updateState = { app: { state: 'idle' }, catalog: { state: 'idle' } };
 
 const loadCfg = () => config.load(P.config);
@@ -129,14 +134,55 @@ async function openProjects(ids, layout) {
     r = await launch.openTerminal(list, ctx, { layout: 'split', terminal: c.settings.terminal });
   } else {
     for (const p of list) {
-      r = p.openWith === 'vscode'
+      const how = layout === 'wt' || p.openWith === 'inapp' ? 'tab' : p.openWith; // 'wt' = 런처 안이 안 될 때 터미널 탭으로 대신 열기
+      r = how === 'vscode'
         ? await launch.openVSCode(p)
-        : await launch.openTerminal([p], ctx, { layout: p.openWith === 'window' ? 'window' : 'tab', terminal: c.settings.terminal });
+        : await launch.openTerminal([p], ctx, { layout: how === 'window' ? 'window' : 'tab', terminal: c.settings.terminal });
       if (!r.ok) break;
     }
   }
   const warn = r.ok && !hasKey && list.some(p => p.mode === 'split') ? 'z.ai 키가 없어 GLM 위임은 동작하지 않습니다' : '';
   return { ...r, warn };
+}
+
+// ───────── 런처 안 터미널 ─────────
+function getPty() {
+  if (ptyModule !== undefined) return ptyModule;
+  try { ptyModule = require('@lydell/node-pty'); } catch (e) { ptyModule = null; ptyError = String((e && e.message) || e); }
+  return ptyModule;
+}
+function host() {
+  if (!ptyHost) ptyHost = createHost({ spawnPty: (f, a, o) => getPty().spawn(f, a, o), send: (ch, d) => { if (win && !win.isDestroyed()) win.webContents.send(ch, d); } });
+  return ptyHost;
+}
+async function termOpen(projectId, cols, rows) {
+  const c = loadCfg();
+  const p = c.projects.find(x => x.id === projectId);
+  if (!p) return { ok: false, message: '프로젝트를 찾을 수 없습니다' };
+  if (!fs.existsSync(p.path)) return { ok: false, message: `폴더가 없습니다: ${p.path}` };
+  if (p.mode === 'glm' && !secrets.hasKey(P.keyFile)) return { ok: false, message: 'GLM만 모드는 z.ai 키가 필요합니다. 설정에서 키를 저장하세요' };
+  if (!lastChecks) await refreshChecks();
+  if (!lastChecks.node) return { ok: false, message: 'Node.js를 찾을 수 없습니다. 설치한 뒤 설정에서 다시 점검하세요' };
+  if (!getPty()) return { ok: false, fallback: true, message: `런처 안 터미널을 쓸 수 없어 터미널 탭으로 엽니다 (${ptyError.slice(0, 120)})` };
+  if (!fs.existsSync(P.sessionScript)) sync.syncDir(P.bundledRuntime, P.runtime);
+  launch.writeSessionFile(HOME, p, sessionExtra(c));
+  try {
+    const s = host().open({
+      file: lastChecks.node, args: [P.sessionScript, '--project', p.id], cwd: p.path,
+      env: cleanEnv(process.env, { TERM: 'xterm-256color', COLORTERM: 'truecolor', CLAUDE_LAUNCHER_INAPP: '1' }),
+      cols: Number(cols) || 120, rows: Number(rows) || 32,
+      meta: { projectId: p.id, name: p.name, mode: p.mode, title: launch.sessionTitle(p) },
+    });
+    return { ok: true, ...s };
+  } catch (e) {
+    return { ok: false, fallback: true, message: `런처 안 터미널을 열지 못해 터미널 탭으로 엽니다 (${String((e && e.message) || e).slice(0, 120)})` };
+  }
+}
+function confirmEndSessions(what) {
+  const n = ptyHost ? ptyHost.running() : 0;
+  if (!n) return true;
+  const r = dialog.showMessageBoxSync(win, { type: 'question', buttons: [what, '취소'], defaultId: 1, cancelId: 1, title: 'Claude 런처', message: `런처 안에서 실행 중인 세션 ${n}개가 함께 끝납니다.`, detail: `${what}할까요?` });
+  return r === 0;
 }
 
 // ───────── 도구 ─────────
@@ -293,7 +339,14 @@ function registerIpc() {
     if (pendingCatalog) { catalog.saveCache(P, pendingCatalog); pendingCatalog = null; setUpdate('catalog', { state: 'latest', version: catalog.base(P).version }); }
     return getState();
   });
-  h('update:installApp', () => { if (autoUpdater && updateState.app.state === 'ready') setImmediate(() => autoUpdater.quitAndInstall(true, true)); });
+  h('update:installApp', () => {
+    if (!autoUpdater || updateState.app.state !== 'ready') return { ok: false };
+    if (!confirmEndSessions('업데이트')) return { ok: false };
+    allowClose = true;
+    if (ptyHost) ptyHost.killAll();
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
+    return { ok: true };
+  });
   h('models:add', (kind, m) => addModel(kind, m));
   h('models:remove', (kind, id) => {
     const c = loadCfg();
@@ -301,7 +354,21 @@ function registerIpc() {
     saveCfg(c);
     return getState();
   });
-  h('link:open', url => { if (/^https:\/\//i.test(String(url))) shell.openExternal(String(url)); });
+  h('link:open', url => { if (/^https?:\/\//i.test(String(url))) shell.openExternal(String(url)); });
+  h('projects:setOpenWith', v => {
+    if (!config.OPEN_WITH.includes(v)) throw new Error('열기 방식이 올바르지 않습니다');
+    const c = loadCfg();
+    for (const p of c.projects) p.openWith = v;
+    c.defaults.openWith = v;
+    saveCfg(c);
+    return getState();
+  });
+  h('term:open', (pid, cols, rows) => termOpen(pid, cols, rows));
+  h('term:attach', id => (ptyHost ? ptyHost.attach(id) : null));
+  h('term:kill', id => (ptyHost ? ptyHost.kill(id) : false));
+  h('term:list', () => (ptyHost ? ptyHost.list() : []));
+  ipcMain.on('term:input', (_e, id, data) => { if (ptyHost) ptyHost.input(id, data); });
+  ipcMain.on('term:resize', (_e, id, cols, rows) => { if (ptyHost) ptyHost.resize(id, cols, rows); });
 }
 
 // ───────── 창·수명 ─────────
@@ -316,11 +383,18 @@ function createWindow(note) {
   win.webContents.on('will-navigate', e => e.preventDefault());
   if (note) win.webContents.once('did-finish-load', () => setTimeout(() => send('toast', { text: note, level: 'ok' }), 800));
   win.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  win.on('close', e => {
+    if (allowClose) return;
+    if (!confirmEndSessions('닫기')) { e.preventDefault(); return; }
+    allowClose = true;
+    if (ptyHost) ptyHost.killAll();
+  });
   win.on('closed', () => { win = null; });
 }
 function start() {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   app.on('window-all-closed', () => app.quit());
+  app.on('before-quit', () => { if (ptyHost) ptyHost.killAll(); });
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
     fs.mkdirSync(HOME, { recursive: true });

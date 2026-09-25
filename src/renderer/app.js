@@ -4,7 +4,7 @@
   const $ = (s, r = document) => r.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const MODE = { split: '분담', claude: 'Claude만', glm: 'GLM만' };
-  const OPENW = { tab: '터미널 탭', window: '새 창', vscode: 'VS Code' };
+  const OPENW = { inapp: '런처 안', tab: '터미널 탭', window: '새 창', vscode: 'VS Code' };
   const ICON = { ok: '✓', warn: '!', error: '✕', info: 'i' };
   const dlg = $('#dlg'), dlgOut = $('#dlg-out');
   let S = null;
@@ -152,6 +152,12 @@ ${main}${work}
 
   // ── 목록 조작
   async function openIds(ids, layout) {
+    if (!layout) { // '런처 안' 대상은 런처 탭으로, 나머지는 외부 터미널로
+      const inapp = ids.map(id => S.config.projects.find(p => p.id === id)).filter(p => p && p.openWith === 'inapp');
+      for (const p of inapp) await TermUI.open(p);
+      ids = ids.filter(id => !inapp.some(p => p.id === id));
+      if (!ids.length) return;
+    }
     const r = await call(api.open, ids, layout);
     if (!r.ok) { toast(r.message || '열지 못했습니다', 'err'); return; }
     if (r.warn) toast(r.warn, 'warn');
@@ -301,7 +307,7 @@ ${main}${work}
 <p class="muted">${S.keySaved ? '저장되어 있습니다 (Windows 계정 암호화).' : '저장된 키가 없습니다.'}</p>
 <div class="inline"><input type="password" id="key" placeholder="${S.keySaved ? '새 키로 바꾸기' : 'z.ai API 키'}" autocomplete="off"><button type="button" class="btn" data-act="save-key">저장</button>${S.keySaved ? '<button type="button" class="btn ghost danger" data-act="del-key">삭제</button>' : ''}<button type="button" class="btn" data-act="glm-check">위임 연결 점검</button></div></section>
 <section><h3>새 폴더 기본값</h3><div id="defaults">${profileHTML(S.config.defaults)}</div>
-<div class="actions"><button type="button" class="btn" data-act="save-defaults">기본값 저장</button></div></section>
+<div class="actions"><button type="button" class="btn" data-act="save-defaults">기본값 저장</button><button type="button" class="btn ghost" data-act="apply-open-all">이 열기 방식을 모든 폴더에 적용</button></div></section>
 <section><h3>터미널</h3>
 <label class="check"><input type="checkbox" id="keepShell"${st.keepShell ? ' checked' : ''}> Claude Code가 끝나도 그 폴더의 PowerShell을 열어 둠</label>
 <label class="field"><span>여는 프로그램</span><select id="terminal"><option value="wt"${st.terminal === 'wt' ? ' selected' : ''}>Windows Terminal</option><option value="console"${st.terminal === 'console' ? ' selected' : ''}>기본 콘솔 창</option></select></label>
@@ -333,6 +339,10 @@ ${userModelsHTML()}</section>
             S = await call(api.deleteKey); render(); openSettings(); break;
           case 'glm-check': runTool('위임 연결 점검', () => api.glmCheck()); break;
           case 'save-defaults': S = await call(api.saveDefaults, readProfile(v('defaults'))); render(); toast('새 폴더 기본값을 저장했습니다', 'ok'); break;
+          case 'apply-open-all': {
+            const ow = readProfile(v('defaults')).openWith;
+            S = await call(api.applyOpenWithAll, ow); render(); toast(`모든 폴더를 '${OPENW[ow]}'(으)로 열도록 바꿨습니다`, 'ok'); break;
+          }
           case 'save-settings':
             S = await call(api.saveSettings, { keepShell: v('keepShell').checked, terminal: v('terminal').value, claudeMd: v('claudeMd').checked, autoUpdate: v('autoUpdate').checked, githubToken: v('ghToken').value });
             render(); toast('설정을 저장했습니다', 'ok'); break;
@@ -396,5 +406,6 @@ ${userModelsHTML()}</section>
   setInterval(async () => {
     try { const st = await api.state(); S.rate = st.rate; S.keySaved = st.keySaved; renderTop(); } catch { /* 무시 */ }
   }, 60000);
-  refresh().then(() => { if (S.firstRun) openSetup(); }).catch(e => toast(errMsg(e), 'err'));
+  TermUI.init({ esc, toast, errMsg, openFallback: id => openIds([id], 'wt') });
+  refresh().then(() => { if (S.firstRun) openSetup(); return TermUI.restore(); }).catch(e => toast(errMsg(e), 'err'));
 })();

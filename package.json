@@ -13,12 +13,17 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/glm-run.test.mjs test/core.test.js test/session.test.mjs",
+    "test": "node --test test/glm-run.test.mjs test/core.test.js test/session.test.mjs test/ptyhost.test.js",
     "dist": "electron-builder --win nsis --publish never",
     "release": "electron-builder --win nsis --publish always",
-    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=test-results.tap test/glm-run.test.mjs test/core.test.js test/session.test.mjs"
+    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=test-results.tap test/glm-run.test.mjs test/core.test.js test/session.test.mjs test/ptyhost.test.js"
   },
   "dependencies": {
+    "@lydell/node-pty": "1.2.0-beta.15",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-unicode11": "^0.9.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/xterm": "^6.0.0",
     "electron-updater": "^6.8.9"
   },
   "devDependencies": {
@@ -67,13 +72,15 @@
       "oneClick": true,
       "perMachine": false,
       "artifactName": "Claude-Launcher-Setup-${version}.${ext}",
-      "deleteAppDataOnUninstall": false
+      "deleteAppDataOnUninstall": false,
+      "include": "build/installer.nsh"
     },
     "publish": [
       {
         "provider": "github",
         "releaseType": "release"
       }
-    ]
+    ],
+    "asar": false
   }
 }

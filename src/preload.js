@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
   moveProject: (id, delta) => call('project:move', id, delta),
   changePath: id => call('project:changePath', id),
   open: (ids, layout) => call('projects:open', ids, layout),
+  applyOpenWithAll: v => call('projects:setOpenWith', v),
   reveal: id => call('folder:reveal', id),
   saveDefaults: d => call('defaults:save', d),
   saveSettings: s => call('settings:save', s),
@@ -30,4 +31,13 @@ contextBridge.exposeInMainWorld('api', {
   openExternal: url => call('link:open', url),
   pathForFile: f => { try { return webUtils.getPathForFile(f); } catch { return ''; } },
   onEvent: cb => { ipcRenderer.on('event', (_e, data) => cb(data)); },
+  // 런처 안 터미널
+  termOpen: (projectId, cols, rows) => call('term:open', projectId, cols, rows),
+  termAttach: id => call('term:attach', id),
+  termKill: id => call('term:kill', id),
+  termList: () => call('term:list'),
+  termInput: (id, data) => ipcRenderer.send('term:input', id, data),
+  termResize: (id, cols, rows) => ipcRenderer.send('term:resize', id, cols, rows),
+  onTermData: cb => { ipcRenderer.on('term:data', (_e, d) => cb(d)); },
+  onTermExit: cb => { ipcRenderer.on('term:exit', (_e, d) => cb(d)); },
 });
