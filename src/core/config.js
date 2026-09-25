@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 
 const MODES = ['split', 'claude', 'glm'];
 const OPEN_WITH = ['inapp', 'tab', 'window', 'vscode'];
-const DEFAULTS = { mode: 'split', main: { model: 'fable', effort: 'high' }, worker: { model: 'glm-5.3', effort: 'high' }, openWith: 'inapp', extraArgs: '' };
+const DEFAULTS = { mode: 'split', main: { model: 'fable', effort: 'medium' }, worker: { model: 'glm-5.3', effort: 'max' }, openWith: 'inapp', extraArgs: '' };
 const SETTINGS = { autoUpdate: true, terminal: 'wt', keepShell: true, claudeMd: true, githubToken: '', catalogUrl: '', zaiBaseUrl: 'https://api.z.ai/api/anthropic', glmConfigDir: '' };
 
 const str = (v, d) => (typeof v === 'string' && v.trim() ? v.trim() : d);

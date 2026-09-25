@@ -22,7 +22,8 @@ test('config: 기본값 채우기, 잘못된 값 교정, 폴더 추가(중복 �
   assert.equal(c.projects.length, 1);
   assert.equal(c.projects[0].mode, 'split');
   assert.equal(c.projects[0].main.model, 'opus');
-  assert.equal(c.projects[0].main.effort, 'high');
+  assert.equal(c.projects[0].main.effort, 'medium');
+  assert.equal(c.projects[0].worker.effort, 'max');
   assert.equal(c.projects[0].worker.model, 'glm-5.3');
   assert.equal(c.settings.terminal, 'console');
   assert.equal(c.settings.autoUpdate, true, '형식이 틀린 값은 기본값');
@@ -34,7 +35,7 @@ test('config: 기본값 채우기, 잘못된 값 교정, 폴더 추가(중복 �
   const u = config.updateProject(c, { id: p.id, mode: 'glm', worker: { model: 'glm-5.3-flash' } });
   assert.equal(u.mode, 'glm');
   assert.equal(u.worker.model, 'glm-5.3-flash');
-  assert.equal(u.worker.effort, 'high', '빠진 값은 기존 값 유지');
+  assert.equal(u.worker.effort, 'max', '빠진 값은 기존 값 유지');
   assert.equal(config.updateProject(c, { id: 'nope' }), null);
   const f = path.join(tmp(), 'c.json');
   config.save(f, c);
