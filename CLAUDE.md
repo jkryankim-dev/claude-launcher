@@ -21,3 +21,5 @@ Windows용 Electron 앱. 폴더별 모델·effort로 Claude Code를 연다. 메�
 - 모델 목록만 바뀔 때: `catalog.json` 수정 + `version` 1 올림 → main에 푸시. 앱 재배포는 필요 없다
 - 앱·스킬 변경: 커밋 → `git tag vX.Y.Z` → `git push origin vX.Y.Z`. Actions가 빌드·릴리스하고 설치된 앱이 스스로 업데이트한다
 - 태그를 올리기 전에 `npm test` 통과를 확인한다
+- 릴리스 파일(exe·blockmap·latest.yml)은 워크플로가 gh CLI로 올린다. electron-builder의 `--publish always`는 릴리스를 두 번 만들고 파일을 빠뜨린 적이 있어 쓰지 않는다
+- 배포 뒤 `gh release view vX.Y.Z --json assets`로 파일 3개가 다 있는지 확인한다. latest.yml이 없으면 설치된 앱이 업데이트를 못 본다
