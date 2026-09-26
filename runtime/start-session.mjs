@@ -69,12 +69,12 @@ export function buildSession(s, { env = process.env, key = '', home = os.homedir
     args.push('--model', s.main.model);
     if (useEffort(s.main.effort)) args.push('--effort', s.main.effort);
     if (s.mode === 'split') {
-      Object.assign(e, { GLM_DELEGATE: 'on', GLM_MODEL: s.worker.model, GLM_EFFORT: s.worker.effort || 'high' });
+      Object.assign(e, { GLM_DELEGATE: 'on', GLM_MODEL: s.worker.model, GLM_EFFORT: s.worker.effort || 'max' });
       if (s.keyFile) e.GLM_KEY_FILE = s.keyFile;
       if (s.zaiBaseUrl) e.GLM_BASE_URL = s.zaiBaseUrl;
       if (s.fastModel) e.GLM_FAST_MODEL = s.fastModel;
       lines = [`메인 ${s.main.model}, effort ${s.main.effort || '기본'} (Claude 구독)`,
-        `작업자 ${s.worker.model}, effort ${s.worker.effort || 'high'} (z.ai) — 반복 작업은 GLM에 위임`];
+        `작업자 ${s.worker.model}, effort ${s.worker.effort || 'max'} (z.ai) — 반복 작업은 GLM에 위임`];
     } else {
       e.GLM_DELEGATE = 'off';
       lines = [`Claude 전용: ${s.main.model}, effort ${s.main.effort || '기본'} (Claude 구독, 위임 안 함)`];

@@ -76,6 +76,11 @@ verify:
 `;
 function spec(dir, name = 't1.md', text = SPEC) { write(dir, `.glm/tasks/${name}`, text); return `.glm/tasks/${name}`; }
 const readLog = f => JSON.parse(fs.readFileSync(f, 'utf8'));
+const promptOf = dir => {
+  const ids = fs.readdirSync(path.join(dir, '.glm/runs'));
+  assert.equal(ids.length, 1, '실행 기록이 1개여야 함');
+  return fs.readFileSync(path.join(dir, '.glm/runs', ids[0], 'prompt.md'), 'utf8');
+};
 
 test('편집 실행: 요약·환경 격리·권한 설정·정확한 되돌리기', () => {
   const dir = makeRepo();
@@ -104,14 +109,14 @@ test('편집 실행: 요약·환경 격리·권한 설정·정확한 되돌리�
   assert.equal(L.env.ANTHROPIC_AUTH_TOKEN, 'zai-test-key-1234');
   assert.equal(L.env.ANTHROPIC_BASE_URL, 'https://api.z.ai/api/anthropic');
   assert.equal(L.env.CLAUDECODE, undefined);
-  assert.equal(L.env.CLAUDE_CODE_EFFORT_LEVEL, 'high');
+  assert.equal(L.env.CLAUDE_CODE_EFFORT_LEVEL, 'max');
   assert.equal(L.env.CLAUDE_CODE_ALWAYS_ENABLE_EFFORT, '1');
   assert.equal(L.env.GLM_WORKER, '1');
   assert.equal(L.env.CLAUDE_CONFIG_DIR, CONF);
   assert.equal(L.env.FOO_BAR, 'baz');
   assert.equal(L.env.ZAI_API_KEY, undefined);
   assert.ok(L.args.includes('dontAsk') && L.args.includes('stream-json'));
-  assert.equal(L.args[L.args.indexOf('--max-turns') + 1], '80');
+  assert.equal(L.args[L.args.indexOf('--max-turns') + 1], '200');
   assert.match(L.stdin, /\[작업 명세\] 테스트 편집/);
   assert.match(L.stdin, /\[작업 규칙\]/);
   assert.match(L.stdin, /수정 허용 범위\(이 밖은 수정 금지\): src\/\*\*, !src\/c\.ts/);
@@ -223,7 +228,7 @@ test('git 저장소가 아닌 폴더에서도 동작', () => {
 test('오류 설명: 최대 턴·인증 실패', () => {
   const dir = makeRepo();
   let r = run([spec(dir)], dir, { MOCK_MODE: 'maxturns' });
-  assert.equal(r.code, 1); assert.match(r.out, /최대 턴\(80\) 도달/);
+  assert.equal(r.code, 1); assert.match(r.out, /최대 턴\(200\) 도달/);
   r = run([spec(dir)], dir, { MOCK_MODE: 'autherr' });
   assert.equal(r.code, 1); assert.match(r.out, /인증 실패\(401\)/);
 });
@@ -239,9 +244,41 @@ test('조사(scan) 역할: 편집 도구 차단과 조사 규칙', () => {
   assert.match(L.stdin, /조사\(읽기 전용/);
 });
 
+test('작업자 프롬프트(edit): 심층 절차·보고서 절·범위 문구 포함', () => {
+  const dir = makeRepo();
+  const r = run([spec(dir)], dir, { MOCK_FILES: 'src/a.ts' });
+  assert.equal(r.code, 0, r.out + r.err);
+  const p = promptOf(dir);
+  assert.match(p, /숙련된 코딩 작업자다/);
+  assert.match(p, /자체 리뷰/);
+  assert.match(p, /처리한 엣지 케이스/);
+  assert.match(p, /## 테스트/);
+  assert.match(p, /## 리스크·후속 제안/);
+  assert.match(p, /수정 허용 범위\(이 밖은 수정 금지\): src\/\*\*, !src\/c\.ts/);
+});
+
+test('작업자 프롬프트(scan): 조사 절차·보고서 절·수정 금지 문구 포함', () => {
+  const dir = makeRepo();
+  const r = run([spec(dir, 'scan.md', '---\nrole: scan\nscope: [src]\n---\n# 조사\n한글 문자열 위치 목록\n')], dir);
+  assert.equal(r.code, 0, r.out + r.err);
+  const p = promptOf(dir);
+  assert.match(p, /## 구조·흐름/);
+  assert.match(p, /## 제안/);
+  assert.match(p, /파일을 수정하지 않는다/);
+});
+
+test('기본값: effort max · 최대 200턴 · 제한 60분 (환경변수 없으면)', () => {
+  const dir = makeRepo();
+  const r = run([spec(dir)], dir, { MOCK_FILES: 'src/a.ts' });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /편집 · glm-5\.3 · effort max · 최대 200턴 · 제한 60분/);
+});
+
 test('SKILL.md의 명세 템플릿이 경고 없이 해석됨', () => {
   const md = fs.readFileSync(path.join(ROOT, 'skills/glm-delegate/SKILL.md'), 'utf8');
-  const tpl = /~~~markdown\r?\n([\s\S]*?)\r?\n~~~/.exec(md)[1].replace('npx tsc --noEmit', 'node -e "process.exit(0)"');
+  const tpl = /~~~markdown\r?\n([\s\S]*?)\r?\n~~~/.exec(md)[1]
+    .replaceAll('npm test', 'node -e "process.exit(0)"')
+    .replaceAll('npx tsc --noEmit', 'node -e "process.exit(0)"');
   const dir = makeRepo();
   const r = run([spec(dir, 'tpl.md', tpl)], dir, { MOCK_FILES: 'src/a.ts' });
   assert.match(r.out, /\[GLM\] 시작 · \S+ · API 라우트 에러 응답을 apiError\(\)로 통일/);

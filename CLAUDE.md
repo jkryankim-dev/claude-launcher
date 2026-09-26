@@ -10,6 +10,7 @@ Windows용 Electron 앱. 폴더별 모델·effort로 Claude Code를 연다. 메�
 - `src/core/` Electron 없이 도는 순수 Node 모듈(테스트 대상). 로직은 여기에 둔다
 - `runtime/start-session.mjs` Windows Terminal 탭에서 실행되는 세션 시작기(앱이 `%APPDATA%\claude-launcher\runtime`에 복사)
 - `skills/glm-delegate/` GLM 위임 스킬(앱이 `~/.claude/skills`에 복사). `scripts/glm-run.mjs`는 의존성 없는 단일 파일
+- 작업자 프롬프트 문안은 glm-run.mjs의 RULES_EDIT/RULES_SCAN/buildPrompt에 있다. 작업자를 더 깊게 일하게 하려면 여기를 고친다
 - `catalog.json` 모델·effort 목록. 설치된 앱이 main 브랜치의 이 파일을 받아 갱신한다
 
 ## 규칙
