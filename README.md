@@ -53,6 +53,30 @@
 - Claude Code가 끝나도 탭은 그 폴더의 PowerShell로 남습니다. 이어서 하려면 화면에 안내된 `claude --continue …`를 입력합니다. 설정에서 끌 수 있습니다.
 - 행의 ⋯ 버튼에서 이름, 폴더, claude 추가 인자(예: `--permission-mode plan`), 순서를 바꿉니다.
 
+## 원격(SSH) 프로젝트
+
+Windows 미니PC(예: 테일스케일로 묶은 홈서버)의 폴더를 로컬 런처에서 바로 열 수 있습니다. 세션은 SSH로 미니PC 안에서 돌고, 화면은 로컬 터미널(런처 안 탭 또는 Windows Terminal)에 뜹니다.
+
+### 미니PC 준비 (한 번만)
+
+1. **OpenSSH Server** 설치·실행: Windows 설정 → 선택적 기능, 또는 PowerShell 관리자에서 `Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0` 후 `Start-Service sshd`·`Set-Service sshd -StartupType Automatic`.
+2. **Node.js 18 이상** 설치.
+3. **Claude Code** 설치 뒤 미니PC에서 `claude`를 한 번 실행해 로그인해 둡니다.
+4. 로컬 PC의 공개 키(`%USERPROFILE%\.ssh\id_ed25519.pub` 등)를 미니PC에 등록합니다. **미니PC 계정이 관리자면 `C:\ProgramData\ssh\administrators_authorized_keys` 파일에** 넣어야 합니다(일반 사용자 계정은 `%USERPROFILE%\.ssh\authorized_keys`).
+5. 로컬 PC에 OpenSSH 클라이언트(ssh.exe)가 있어야 합니다. 없으면 Windows 설정 → 선택적 기능에서 설치하세요.
+
+### 원격 폴더 추가
+
+툴바의 **원격 폴더 추가**를 눌러 호스트·사용자(선택)·포트(선택, 기본 22)·원격 경로(예: `C:\dev\project`)를 넣습니다. 같은 테일스케일 네트워크면 호스트에 테일스케일 장치 이름(예: `mini-pc`)이나 IP를 그대로 씁니다. **연결 확인**으로 SSH·Node.js·Claude Code·git·폴더를 미리 점검할 수 있고, **찾아보기**로 미니PC의 폴더를 골라 담을 수 있습니다. **추가하고 계속**로 여러 폴더를 이어서 등록하세요.
+
+처음 열 때 런처가 세션 시작기·위임 스킬·세션 설정·CLAUDE.md 분담 규칙을 미니PC에 자동으로 맞춰 둡니다(1–3초 걸리고, 그동안 버튼이 '연결 중…'으로 표시됩니다).
+
+### 제한
+
+- 원격 프로젝트는 탐색기 열기·VS Code 열기를 쓸 수 없습니다. 항상 터미널(런처 안 또는 터미널 탭)로 열립니다.
+- SSH 연결이 끊기면 세션도 함께 끝납니다. 다시 열고 이어 작업하려면 미니PC 셸에서 `claude --continue`를 입력하세요.
+- 분담·GLM만 모드에서 쓰는 z.ai 키는 미니PC에 `zai-key.txt` **평문 파일**로 저장됩니다. 로컬의 DPAPI 암호화와 다르니 미니PC 접근 권한 관리에 유의하세요.
+
 ## 업데이트와 패치
 
 | 대상 | 방법 |

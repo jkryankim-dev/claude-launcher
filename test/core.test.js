@@ -12,6 +12,7 @@ const launch = require('../src/core/launch');
 const claudemd = require('../src/core/claudemd');
 const sync = require('../src/core/sync');
 const secrets = require('../src/core/secrets');
+const remote = require('../src/core/remote');
 const { zaiRate } = require('../src/core/rate');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -162,4 +163,93 @@ test('rate: z.ai 피크·비피크·종일 비피크 기간', () => {
   assert.equal(zaiRate(new Date('2026-10-14T07:00:00Z')).peak, true); // 수요일 16시 KST
   assert.equal(zaiRate(new Date('2026-10-14T11:00:00Z')).peak, false); // 수요일 20시 KST
   assert.equal(zaiRate(new Date('2026-10-17T07:00:00Z')).peak, false); // 토요일
+});
+
+test('config: 원격 프로젝트 정규화 왕복, 잘못된 remote는 버림, 옛 형식은 remote 키 없음', () => {
+  const c = config.normalize({
+    projects: [
+      { path: 'C:\\dev\\foo\\', remote: { host: ' example-host ', user: ' me ', port: '2222' }, mode: 'weird' },
+      { path: 'C:\\dev\\bar', remote: { host: '-oProxyCommand=evil' } },
+      { path: 'C:\\dev\\baz', remote: { host: '' } },
+      { path: 'C:\\dev\\local' },
+    ],
+  });
+  assert.equal(c.projects.length, 2, '잘못된 remote 프로젝트는 버림');
+  const rp = c.projects[0];
+  assert.deepEqual(rp.remote, { host: 'example-host', user: 'me', port: 2222 });
+  assert.equal(rp.path, 'C:\\dev\\foo', '원격 경로는 cleanPath');
+  assert.equal(rp.name, 'foo', '이름 기본값은 baseName');
+  assert.equal(rp.mode, 'split');
+  const local = c.projects[1];
+  assert.ok(!('remote' in local), 'remote 없는 프로젝트에는 remote 키를 만들지 않음');
+  const f = path.join(tmp(), 'c.json');
+  config.save(f, c);
+  assert.deepEqual(config.load(f), c, '저장 → 다시 normalize해도 동일');
+});
+
+test('config: addRemoteProject 중복 판정(대소문자·슬래시)·로컬과 같은 경로 공존', () => {
+  const c = config.normalize({});
+  const a = config.addRemoteProject(c, { host: 'Example-Host', user: 'me', port: 2222, path: 'C:\\dev\\foo\\' });
+  assert.ok(a && /^[a-z0-9]{4,16}$/.test(a.id));
+  assert.equal(a.name, 'foo');
+  assert.equal(config.addRemoteProject(c, { host: 'example-host', user: 'ME', port: 2222, path: 'c:/dev/foo' }).id, a.id, '대소문자·슬래시 차이는 같은 프로젝트');
+  assert.equal(c.projects.length, 1);
+  assert.equal(config.addRemoteProject(c, { host: 'bad host', path: 'C:\\x' }), null, '잘못된 host면 추가 안 함');
+  assert.equal(config.addRemoteProject(config.normalize({}), { host: 'port-default', user: 'me', port: 0, path: 'C:\\x' }).remote.port, 0, '기본 포트(0)로 정규화된 값도 추가됨');
+  assert.equal(config.addRemoteProject(c, { host: 'ok-host', path: '   ' }), null, '빈 path면 추가 안 함');
+  assert.equal(config.addRemoteProject(c), null);
+  const local = config.addProject(c, 'C:\\dev\\foo'); // 원격과 같은 경로 문자열이어도 별개 프로젝트
+  assert.notEqual(local.id, a.id);
+  assert.ok(!('remote' in local));
+  assert.equal(c.projects.length, 2);
+  assert.equal(config.addProject(c, 'C:\\dev\\foo').id, local.id, '로컬끼리는 기존처럼 중복 판정');
+  config.addRemoteProject(c, { host: 'example-host', user: 'me', port: 2222, path: 'C:\\dev\\other' });
+  assert.equal(c.projects.length, 3, '같은 대상이라도 경로가 다르면 추가');
+});
+
+test('config: updateProject — 원격 path·host/port 수정, 잘못된 값 무시, 로컬에 remote 붙이기 무시', () => {
+  const c = config.normalize({ projects: [{ path: 'C:\\dev\\foo', remote: { host: 'example-host', user: 'me', port: 2222 } }] });
+  const id = c.projects[0].id;
+  const u = config.updateProject(c, { id, path: 'C:\\dev\\bar\\', remote: { host: 'new-host', port: 22 } });
+  assert.equal(u.path, 'C:\\dev\\bar');
+  assert.deepEqual(u.remote, { host: 'new-host', user: 'me', port: 0 }, '빠진 user는 유지, 22는 기본 포트 0');
+  const bad = config.updateProject(c, { id, remote: { host: 'bad host' } });
+  assert.equal(bad.remote.host, 'new-host', '잘못된 host는 무시');
+  assert.equal(config.updateProject(c, { id, path: '   ' }).path, 'C:\\dev\\bar', '빈 path는 무시');
+  const c2 = config.normalize({ projects: [{ path: 'C:\\dev\\local' }] });
+  const u2 = config.updateProject(c2, { id: c2.projects[0].id, remote: { host: 'example-host' } });
+  assert.ok(!('remote' in u2), '로컬 프로젝트에 remote를 붙이는 변경은 무시');
+  assert.equal(config.updateProject(c2, { id: c2.projects[0].id, path: 'C:\\dev\\moved' }).path, 'C:\\dev\\moved', '로컬 path 수정은 기존처럼 동작');
+});
+
+test('launch: 원격 프로젝트 — wt 인자(탭·분할·로컬 혼합)·consoleCommand·sessionTitle·sessionData', () => {
+  const ctx = { node: 'node.exe', script: 's.mjs', wt: 'wt.exe', ssh: 'C:\\Windows\\System32\\OpenSSH\\ssh.exe', homeDir: 'C:\\Users\\main' };
+  const mk = (id, r = null) => ({ id, name: `p${id}`, path: r ? 'C:\\dev\\foo' : `C:\\dev\\p${id}`, mode: 'split', remote: r, main: { model: 'fable', effort: 'high' }, worker: { model: 'glm-5.3', effort: 'max' } });
+  const rp = mk('rmt1', { host: 'example-host', user: 'me', port: 2222 });
+  const one = launch.buildWtArgs([rp], ctx, 'tab');
+  assert.equal(one[one.indexOf('-d') + 1], 'C:\\Users\\main', '시작 폴더는 로컬 홈');
+  const cmdIdx = one.indexOf(ctx.ssh);
+  assert.ok(cmdIdx > 0, 'node·script 자리에 ssh');
+  assert.deepEqual(one.slice(cmdIdx + 1, -1), remote.sshArgs(rp.remote, { interactive: true }));
+  assert.ok(one[one.length - 1].startsWith('powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand '));
+  assert.ok(!one.includes('--project'), '--project는 startCommand 안에 있음');
+  assert.equal(one[one.indexOf('--title') + 1], 'example-host · prmt1 · fable/high + glm-5.3', '제목 앞에 host');
+  const mix = launch.buildWtArgs([mk('loc1'), rp], ctx, 'split');
+  assert.equal(mix.filter(a => a === '--project').length, 1, '로컬 탭에만 --project');
+  assert.equal(mix[mix.indexOf('--project') + 1], 'loc1');
+  assert.ok(mix.includes(ctx.ssh) && mix.includes('node.exe'), '로컬·원격 혼합 분할');
+  const cc = launch.consoleCommand(rp, ctx);
+  assert.ok(cc.startsWith(`/d /s /c start "prmt1" /D "C:\\Users\\main" "${ctx.ssh}" `));
+  assert.match(cc, /-EncodedCommand [A-Za-z0-9+/=]+$/);
+  assert.ok(!cc.includes('--project'));
+  assert.equal(launch.sessionTitle(rp), 'example-host · prmt1 · fable/high + glm-5.3');
+  const home = tmp();
+  const sd = launch.sessionData(rp, { keyFile: 'k' });
+  assert.equal(typeof sd.writtenAt, 'string');
+  const f = launch.writeSessionFile(home, rp, { keyFile: 'k' });
+  const inFile = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.equal(typeof inFile.writtenAt, 'string');
+  delete sd.writtenAt;
+  delete inFile.writtenAt;
+  assert.deepEqual(inFile, sd, 'sessionData는 writeSessionFile이 쓰는 내용과 같음');
 });

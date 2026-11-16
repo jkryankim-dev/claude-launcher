@@ -43,7 +43,9 @@ function createHost({ spawnPty, send }) {
   function kill(id) {
     const s = get(id);
     if (!s) return false;
-    if (s.alive) { try { s.pty.kill(); } catch { /* 이미 종료 */ } }
+    // 프로그램이 이미 끝났어도 호출한다: Windows에서는 kill()이 의사 콘솔(conhost)과 출력 파이프를 닫는다.
+    // 건너뛰면 conhost가 남고 Node 이벤트 루프가 끝나지 않는다.
+    try { s.pty.kill(); } catch { /* 이미 종료 */ }
     s.alive = false;
     sessions.delete(id);
     return true;

@@ -4,18 +4,21 @@ const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const { cleanEnv } = require('./proc');
+const remote = require('./remote');
 
 const TAB_COLOR = { split: '#534AB7', claude: '#5F5E5A', glm: '#0F6E56' }; // 런처 목록의 모드 색과 같음
 
 function clean(s) { return String(s).replace(/[;"\r\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60); }
 function sessionTitle(p) {
-  if (p.mode === 'glm') return `${p.name} · ${p.worker.model}/${p.worker.effort}`;
-  if (p.mode === 'claude') return `${p.name} · ${p.main.model}/${p.main.effort}`;
-  return `${p.name} · ${p.main.model}/${p.main.effort} + ${p.worker.model}`;
+  const base = p.mode === 'glm' ? `${p.name} · ${p.worker.model}/${p.worker.effort}`
+    : p.mode === 'claude' ? `${p.name} · ${p.main.model}/${p.main.effort}`
+      : `${p.name} · ${p.main.model}/${p.main.effort} + ${p.worker.model}`;
+  return p.remote ? `${p.remote.host} · ${base}` : base;
 }
 function paneArgs(p, ctx) {
-  return ['--title', clean(sessionTitle(p)), '--suppressApplicationTitle', '--tabColor', TAB_COLOR[p.mode] || TAB_COLOR.split,
-    '-d', p.path, ctx.node, ctx.script, '--project', p.id];
+  const head = ['--title', clean(sessionTitle(p)), '--suppressApplicationTitle', '--tabColor', TAB_COLOR[p.mode] || TAB_COLOR.split];
+  if (p.remote) return [...head, '-d', ctx.homeDir, ctx.ssh, ...remote.sessionSshArgs(p.remote, p.id)];
+  return [...head, '-d', p.path, ctx.node, ctx.script, '--project', p.id];
 }
 /** wt.exe 인자. 1개: 기존 창의 새 탭(또는 새 창). 여러 개: 새 창에 최대 2×2 분할, 5개째부터는 같은 창의 새 탭 */
 function buildWtArgs(list, ctx, layout = 'tab') {
@@ -31,6 +34,7 @@ function buildWtArgs(list, ctx, layout = 'tab') {
 }
 /** Windows Terminal이 없을 때: cmd /c start 로 콘솔 창 */
 function consoleCommand(p, ctx) {
+  if (p.remote) return `/d /s /c start "${clean(p.name)}" /D "${ctx.homeDir}" "${ctx.ssh}" ${remote.sessionSshArgs(p.remote, p.id).join(' ')}`;
   return `/d /s /c start "${clean(p.name)}" /D "${p.path}" "${ctx.node}" "${ctx.script}" --project ${p.id}`;
 }
 function spawnDetached(file, args, opts = {}) {
@@ -63,11 +67,15 @@ async function openVSCode(p) {
   if (exe) return spawnDetached(exe, [p.path]);
   return spawnDetached(process.env.ComSpec || 'cmd.exe', [`/d /s /c code "${p.path}"`], { windowsVerbatimArguments: true, windowsHide: true });
 }
+/** 시작기가 읽을 세션 데이터(비밀값 없음). 원격 준비 에이전트가 같은 객체를 원격에 쓴다 */
+function sessionData(p, extra = {}) {
+  return { ...p, ...extra, writtenAt: new Date().toISOString() };
+}
 /** 시작기가 읽을 세션 파일(비밀값 없음) */
 function writeSessionFile(home, p, extra = {}) {
   const f = path.join(home, 'sessions', `${p.id}.json`);
   fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify({ ...p, ...extra, writtenAt: new Date().toISOString() }, null, 2));
+  fs.writeFileSync(f, JSON.stringify(sessionData(p, extra), null, 2));
   return f;
 }
-module.exports = { TAB_COLOR, sessionTitle, buildWtArgs, consoleCommand, openTerminal, openVSCode, findVSCode, writeSessionFile };
+module.exports = { TAB_COLOR, sessionTitle, buildWtArgs, consoleCommand, openTerminal, openVSCode, findVSCode, sessionData, writeSessionFile };

@@ -13,10 +13,10 @@
   },
   "scripts": {
     "start": "electron .",
-    "test": "node --test test/glm-run.test.mjs test/core.test.js test/session.test.mjs test/ptyhost.test.js",
+    "test": "node --test test/glm-run.test.mjs test/core.test.js test/session.test.mjs test/ptyhost.test.js test/remote.test.js",
     "dist": "electron-builder --win nsis --publish never",
     "release": "electron-builder --win nsis --publish always",
-    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=test-results.tap test/glm-run.test.mjs test/core.test.js test/session.test.mjs test/ptyhost.test.js"
+    "test:ci": "node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=test-results.tap test/glm-run.test.mjs test/core.test.js test/session.test.mjs test/ptyhost.test.js test/remote.test.js"
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.15",

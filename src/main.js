@@ -17,12 +17,15 @@ const checks = require('./core/checks');
 const sync = require('./core/sync');
 const claudemd = require('./core/claudemd');
 const claudebin = require('./core/claudebin');
+const remote = require('./core/remote');
 const { runCapture, cleanEnv } = require('./core/proc');
 const { zaiRate } = require('./core/rate');
 const { createHost } = require('./core/ptyhost');
 const pkg = require('../package.json');
 
-app.setPath('userData', path.join(app.getPath('appData'), 'claude-launcher'));
+// 개발 실행(npm start)에서만: CLAUDE_LAUNCHER_HOME으로 데이터 폴더를 바꿔 설치된 런처와 동시에 띄울 수 있다(중복 실행 잠금이 폴더 기준).
+const DEV_HOME = !app.isPackaged && process.env.CLAUDE_LAUNCHER_HOME ? path.resolve(process.env.CLAUDE_LAUNCHER_HOME) : '';
+app.setPath('userData', DEV_HOME || path.join(app.getPath('appData'), 'claude-launcher'));
 
 const RES = app.isPackaged ? process.resourcesPath : path.join(__dirname, '..');
 const HOME = app.getPath('userData');
@@ -98,7 +101,10 @@ function getState() {
   const c = loadCfg();
   return {
     version: app.getVersion(), platform: process.platform, firstRun: !c.setupDone,
-    config: { ...c, settings: { ...c.settings, githubToken: c.settings.githubToken ? MASK : '' } },
+    config: {
+      ...c, settings: { ...c.settings, githubToken: c.settings.githubToken ? MASK : '' },
+      projects: c.projects.map(p => ({ ...p, remoteLabel: p.remote ? remote.label(p.remote, p.path) : '' })),
+    },
     catalog: catalog.effective(P, c), checks: lastChecks, keySaved: secrets.hasKey(P.keyFile),
     rate: zaiRate(new Date()), update: updateState, repo: repoInfo(), paths: { home: HOME, skill: P.skillDir },
   };
@@ -112,36 +118,73 @@ function sessionExtra(c) {
     glmConfigDir: c.settings.glmConfigDir || path.join(os.homedir(), '.claude-glm'), keyFile: P.keyFile,
   };
 }
+// ───────── 원격(SSH) 프로젝트 ─────────
+const SSH_MISSING = 'ssh를 찾을 수 없습니다. Windows 설정 → 선택적 기능에서 OpenSSH 클라이언트를 설치하세요.';
+const remotePreparing = new Map(); // 프로젝트 id → 진행 중 prepare 약속. 같은 원격 프로젝트를 겹쳐 열 때 준비가 두 번 돌지 않게 한다
+function remoteRes() {
+  let snippet = null;
+  if (claudemd.has(P.claudeMd)) { try { snippet = fs.readFileSync(P.snippet, 'utf8'); } catch { snippet = null; } }
+  return { runtimeDir: P.bundledRuntime, skillDir: P.bundledSkill, snippet };
+}
+/** 원격에 runtime·스킬·세션 JSON·CLAUDE.md 영역·z.ai 키를 심는다. 성공하면 ssh.exe 경로를 돌려준다 */
+function prepareRemote(p, c) {
+  let run = remotePreparing.get(p.id);
+  if (run) return run;
+  run = (async () => {
+    const ssh = await remote.findSsh();
+    if (!ssh) throw new Error(SSH_MISSING);
+    const key = p.mode !== 'claude' ? (secrets.loadKey(P.keyFile) || null) : null; // 평문 키는 이 인자로만 감
+    await remote.prepareOpen(p, { res: remoteRes(), sessionExtra: sessionExtra(c), key, ssh });
+    return ssh;
+  })().finally(() => { remotePreparing.delete(p.id); });
+  remotePreparing.set(p.id, run);
+  return run;
+}
+
 async function openProjects(ids, layout) {
   const c = loadCfg();
   const list = ids.map(id => c.projects.find(p => p.id === id)).filter(Boolean);
   if (!list.length) return { ok: false, message: '열 폴더가 없습니다' };
-  const missing = list.filter(p => !fs.existsSync(p.path));
+  const missing = list.filter(p => !p.remote && !fs.existsSync(p.path));
   if (missing.length) return { ok: false, message: `폴더가 없습니다: ${missing.map(p => p.path).join(', ')}` };
   const hasKey = secrets.hasKey(P.keyFile);
   if (!hasKey && list.some(p => p.mode === 'glm' && (layout === 'split' || p.openWith !== 'vscode'))) {
     return { ok: false, message: 'GLM만 모드는 z.ai 키가 필요합니다. 설정에서 키를 저장하세요' };
   }
   if (!lastChecks) await refreshChecks();
-  const needTerminal = layout === 'split' || list.some(p => p.openWith !== 'vscode');
-  if (needTerminal && !lastChecks.node) return { ok: false, message: 'Node.js를 찾을 수 없습니다. 설치한 뒤 설정에서 다시 점검하세요' };
+  const needNode = list.some(p => !p.remote && (layout === 'split' || p.openWith !== 'vscode')); // 원격은 로컬 node 없이 ssh만으로 열린다
+  if (needNode && !lastChecks.node) return { ok: false, message: 'Node.js를 찾을 수 없습니다. 설치한 뒤 설정에서 다시 점검하세요' };
+  const failed = [];
+  const ready = new Set();
+  let ssh = null;
+  await Promise.all(list.filter(p => p.remote).map(async p => {
+    try { ssh = await prepareRemote(p, c); ready.add(p.id); }
+    catch (e) { failed.push(`${p.name}: ${String((e && e.message) || e)}`); }
+  }));
+  const openList = list.filter(p => !p.remote || ready.has(p.id)); // 준비에 실패한 원격만 빼고 나머지는 연다
+  if (!openList.length) return { ok: false, message: failed.join('\n') || '열 수 있는 폴더가 없습니다' };
   if (!fs.existsSync(P.sessionScript)) sync.syncDir(P.bundledRuntime, P.runtime);
   const extra = sessionExtra(c);
-  for (const p of list) launch.writeSessionFile(HOME, p, extra);
+  for (const p of openList) if (!p.remote) launch.writeSessionFile(HOME, p, extra);
   const ctx = { node: lastChecks.node || 'node', script: P.sessionScript, wt: lastChecks.wt };
+  if (openList.some(p => p.remote)) { ctx.ssh = ssh || await remote.findSsh(); ctx.homeDir = os.homedir(); }
   let r = { ok: true };
-  if (layout === 'split' && list.length > 1) {
-    r = await launch.openTerminal(list, ctx, { layout: 'split', terminal: c.settings.terminal });
+  if (layout === 'split' && openList.length > 1) {
+    r = await launch.openTerminal(openList, ctx, { layout: 'split', terminal: c.settings.terminal });
   } else {
-    for (const p of list) {
-      const how = layout === 'wt' || p.openWith === 'inapp' ? 'tab' : p.openWith; // 'wt' = 런처 안이 안 될 때 터미널 탭으로 대신 열기
+    for (const p of openList) {
+      const ow = p.remote && p.openWith === 'vscode' ? 'inapp' : p.openWith; // 원격은 VS Code 대신 터미널로
+      const how = layout === 'wt' || ow === 'inapp' ? 'tab' : ow; // 'wt' = 런처 안이 안 될 때 터미널 탭으로 대신 열기
       r = how === 'vscode'
         ? await launch.openVSCode(p)
         : await launch.openTerminal([p], ctx, { layout: how === 'window' ? 'window' : 'tab', terminal: c.settings.terminal });
       if (!r.ok) break;
     }
   }
-  const warn = r.ok && !hasKey && list.some(p => p.mode === 'split') ? 'z.ai 키가 없어 GLM 위임은 동작하지 않습니다' : '';
+  const warn = [
+    r.ok && !hasKey && list.some(p => p.mode === 'split') ? 'z.ai 키가 없어 GLM 위임은 동작하지 않습니다' : '',
+    ...failed,
+  ].filter(Boolean).join('\n');
   return { ...r, warn };
 }
 
@@ -159,20 +202,32 @@ async function termOpen(projectId, cols, rows) {
   const c = loadCfg();
   const p = c.projects.find(x => x.id === projectId);
   if (!p) return { ok: false, message: '프로젝트를 찾을 수 없습니다' };
-  if (!fs.existsSync(p.path)) return { ok: false, message: `폴더가 없습니다: ${p.path}` };
+  if (!p.remote && !fs.existsSync(p.path)) return { ok: false, message: `폴더가 없습니다: ${p.path}` };
   if (p.mode === 'glm' && !secrets.hasKey(P.keyFile)) return { ok: false, message: 'GLM만 모드는 z.ai 키가 필요합니다. 설정에서 키를 저장하세요' };
-  if (!lastChecks) await refreshChecks();
-  if (!lastChecks.node) return { ok: false, message: 'Node.js를 찾을 수 없습니다. 설치한 뒤 설정에서 다시 점검하세요' };
+  let ssh = null;
+  if (p.remote) {
+    try { ssh = await prepareRemote(p, c); }
+    catch (e) { return { ok: false, message: String((e && e.message) || e) }; } // 원격 준비 실패는 wt로 폴백해도 같으니 오류만 보낸다
+  } else {
+    if (!lastChecks) await refreshChecks();
+    if (!lastChecks.node) return { ok: false, message: 'Node.js를 찾을 수 없습니다. 설치한 뒤 설정에서 다시 점검하세요' };
+  }
   if (!getPty()) return { ok: false, fallback: true, message: `런처 안 터미널을 쓸 수 없어 터미널 탭으로 엽니다 (${ptyError.slice(0, 120)})` };
+  const colsN = Number(cols) || 120, rowsN = Number(rows) || 32;
+  const env = cleanEnv(process.env, { TERM: 'xterm-256color', COLORTERM: 'truecolor', CLAUDE_LAUNCHER_INAPP: '1' });
+  const meta = { projectId: p.id, name: p.name, mode: p.mode, title: launch.sessionTitle(p) };
+  if (p.remote) {
+    try {
+      const s = host().open({ file: ssh, args: remote.sessionSshArgs(p.remote, p.id), cwd: os.homedir(), env, cols: colsN, rows: rowsN, meta });
+      return { ok: true, ...s };
+    } catch (e) {
+      return { ok: false, fallback: true, message: `런처 안 터미널을 열지 못해 터미널 탭으로 엽니다 (${String((e && e.message) || e).slice(0, 120)})` };
+    }
+  }
   if (!fs.existsSync(P.sessionScript)) sync.syncDir(P.bundledRuntime, P.runtime);
   launch.writeSessionFile(HOME, p, sessionExtra(c));
   try {
-    const s = host().open({
-      file: lastChecks.node, args: [P.sessionScript, '--project', p.id], cwd: p.path,
-      env: cleanEnv(process.env, { TERM: 'xterm-256color', COLORTERM: 'truecolor', CLAUDE_LAUNCHER_INAPP: '1' }),
-      cols: Number(cols) || 120, rows: Number(rows) || 32,
-      meta: { projectId: p.id, name: p.name, mode: p.mode, title: launch.sessionTitle(p) },
-    });
+    const s = host().open({ file: lastChecks.node, args: [P.sessionScript, '--project', p.id], cwd: p.path, env, cols: colsN, rows: rowsN, meta });
     return { ok: true, ...s };
   } catch (e) {
     return { ok: false, fallback: true, message: `런처 안 터미널을 열지 못해 터미널 탭으로 엽니다 (${String((e && e.message) || e).slice(0, 120)})` };
@@ -196,7 +251,7 @@ async function toolGlmCheck() {
     GLM_KEY_FILE: P.keyFile, GLM_MODEL: d.worker.model, GLM_EFFORT: d.worker.effort, GLM_BASE_URL: c.settings.zaiBaseUrl,
     GLM_FAST_MODEL: catalog.effective(P, c).glm.fastModel || 'glm-5.3-flash', CLAUDE_LAUNCHER_HOME: HOME,
   });
-  const cwd = (c.projects.find(p => fs.existsSync(p.path)) || {}).path || os.homedir();
+  const cwd = (c.projects.find(p => !p.remote && fs.existsSync(p.path)) || {}).path || os.homedir();
   return runCapture(lastChecks.node, [P.glmRun, '--check'], { cwd, env, timeout: 240000 });
 }
 async function toolClaudeUpdate() {
@@ -293,6 +348,25 @@ function addDirs(dirs) {
   saveCfg(c);
 }
 
+// ───────── 원격 점검 결과 → 화면 항목 ─────────
+function remoteVal(v) {
+  if (v == null) return '';
+  if (typeof v === 'object') return String(v.version || v.path || v.label || '');
+  return String(v);
+}
+function remoteCheckItems(info, r, rp) {
+  const items = [{ label: 'SSH 연결', ok: true, detail: `${r.user ? `${r.user}@` : ''}${r.host}${r.port && r.port !== 22 ? `:${r.port}` : ''}` }];
+  const nv = remoteVal(info.node);
+  const major = Number((/v?(\d+)(?:\.|$)/.exec(nv) || [])[1] || 0);
+  items.push({ label: 'Node.js', ok: !!info.node && (!major || major >= 18), detail: nv ? (major && major < 18 ? `${nv} — 18 이상이 필요합니다` : nv) : '설치되어 있지 않습니다' });
+  const cv = remoteVal(info.claude);
+  items.push({ label: 'Claude Code', ok: !!info.claude, detail: cv || '설치되어 있지 않습니다' });
+  const gv = info.git === true ? "설치됨" : remoteVal(info.git);
+  items.push({ label: 'git', ok: !!info.git, detail: gv || '설치되어 있지 않습니다' });
+  if (rp) items.push({ label: '폴더', ok: !!info.pathExists, detail: info.pathExists ? rp : '폴더를 찾을 수 없습니다' });
+  return items;
+}
+
 // ───────── IPC ─────────
 function registerIpc() {
   const h = (ch, fn) => ipcMain.handle(ch, (_e, ...a) => fn(...a));
@@ -306,13 +380,53 @@ function registerIpc() {
     addDirs((Array.isArray(paths) ? paths : []).filter(p => { try { return fs.statSync(p).isDirectory(); } catch { return false; } }));
     return getState();
   });
+  h('projects:addRemote', d => {
+    try {
+      d = d && typeof d === 'object' ? d : {};
+      const r = remote.normalizeRemote({ host: d.host, user: d.user, port: d.port });
+      if (!r) return { error: 'SSH 연결 정보를 확인하세요 (호스트 필수, 포트는 1–65535 숫자).' };
+      const rp = String(d.path || '').trim();
+      if (!rp) return { error: '원격 폴더 경로를 입력하세요.' };
+      const c = loadCfg();
+      const added = config.addRemoteProject(c, {
+        host: r.host, user: r.user, port: r.port, path: rp,
+        name: typeof d.name === 'string' && d.name.trim() ? d.name.trim() : undefined,
+      });
+      if (!added) return { error: '원격 폴더를 추가하지 못했습니다. 호스트와 경로를 확인하세요.' };
+      saveCfg(c);
+      return getState();
+    } catch (e) { return { error: String((e && e.message) || e) }; }
+  });
+  h('remote:check', async d => {
+    try {
+      d = d && typeof d === 'object' ? d : {};
+      const r = remote.normalizeRemote({ host: d.host, user: d.user, port: d.port });
+      if (!r) return { ok: false, error: 'SSH 연결 정보를 확인하세요 (호스트 필수, 포트는 1–65535 숫자).' };
+      const ssh = await remote.findSsh();
+      if (!ssh) return { ok: false, error: SSH_MISSING };
+      const rp = String(d.path || '').trim();
+      const info = await remote.checkRemote(r, rp, { res: remoteRes(), ssh });
+      return { ok: true, items: remoteCheckItems(info, r, rp) };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
+  h('remote:list', async d => {
+    try {
+      d = d && typeof d === 'object' ? d : {};
+      const r = remote.normalizeRemote({ host: d.host, user: d.user, port: d.port });
+      if (!r) return { ok: false, error: 'SSH 연결 정보를 확인하세요 (호스트 필수, 포트는 1–65535 숫자).' };
+      const ssh = await remote.findSsh();
+      if (!ssh) return { ok: false, error: SSH_MISSING };
+      const res = await remote.listRemote(r, String(d.path || '').trim(), { res: remoteRes(), ssh });
+      return { ok: true, path: res.path || '', parent: res.parent == null ? null : res.parent, dirs: Array.isArray(res.dirs) ? res.dirs : [] };
+    } catch (e) { return { ok: false, error: String((e && e.message) || e) }; }
+  });
   h('project:save', p => { const c = loadCfg(); if (!config.updateProject(c, p)) throw new Error('프로젝트를 찾을 수 없습니다'); saveCfg(c); return getState(); });
   h('project:remove', id => { const c = loadCfg(); config.removeProject(c, id); saveCfg(c); return getState(); });
   h('project:move', (id, delta) => { const c = loadCfg(); config.moveProject(c, id, delta); saveCfg(c); return getState(); });
   h('project:changePath', async id => {
     const c = loadCfg();
     const p = c.projects.find(x => x.id === id);
-    if (!p) return getState();
+    if (!p || p.remote) return getState(); // 원격 프로젝트는 로컬 폴더 선택 대화상자를 쓰지 않는다
     const r = await dialog.showOpenDialog(win, { title: '폴더 변경', defaultPath: p.path, properties: ['openDirectory'] });
     if (!r.canceled && r.filePaths[0]) { p.path = r.filePaths[0]; saveCfg(c); }
     return getState();
@@ -320,7 +434,9 @@ function registerIpc() {
   h('projects:open', (ids, layout) => openProjects(Array.isArray(ids) ? ids : [], layout));
   h('folder:reveal', async id => {
     const p = loadCfg().projects.find(x => x.id === id);
-    if (p) { const err = await shell.openPath(p.path); if (err) throw new Error(err); }
+    if (!p) return;
+    if (p.remote) throw new Error('원격 프로젝트는 탐색기에서 열 수 없습니다.');
+    const err = await shell.openPath(p.path); if (err) throw new Error(err);
   });
   h('defaults:save', d => { const c = loadCfg(); c.defaults = config.normalize({ defaults: d }).defaults; saveCfg(c); return getState(); });
   h('settings:save', s => saveSettings(s));

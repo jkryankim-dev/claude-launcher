@@ -9,6 +9,7 @@
   const dlg = $('#dlg'), dlgOut = $('#dlg-out');
   let S = null;
   const selected = new Set();
+  const opening = new Set(); // 열기 진행 중(원격 준비 1–3초)인 프로젝트 id. 중복 클릭 방지
   let dismissedKey = '';
   let toastTimer = null;
 
@@ -52,6 +53,9 @@
       + `<select data-f="${key}.effort" aria-label="${who} effort">${effortOptions(effortsFor(kind, v.model), v.effort)}</select></div>`;
   }
   const options = (map, cur) => Object.entries(map).map(([k, v]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${v}</option>`).join('');
+  // 원격 프로젝트는 VS Code로 열 수 없다. 저장값이 VS Code여도 화면에는 런처 안(터미널)으로 보여 준다
+  const openWithShown = p => (p.remote && p.openWith === 'vscode' ? 'inapp' : p.openWith);
+  const openWithOpts = p => Object.entries(OPENW).map(([k, v]) => `<option value="${k}"${k === openWithShown(p) ? ' selected' : ''}${p.remote && k === 'vscode' ? ' disabled' : ''}>${v}</option>`).join('');
   function profileText(d) {
     const e = x => (x === 'off' ? '' : ` ${x}`);
     if (d.mode === 'glm') return `GLM만, ${modelLabel('glm', d.worker.model)}${e(d.worker.effort)}`;
@@ -61,7 +65,7 @@
   function profileHTML(d) {
     return `<div class="grid2">
 <label class="field"><span>모드</span><select data-f="mode">${options(MODE, d.mode)}</select></label>
-<label class="field"><span>열기 방식</span><select data-f="openWith">${options(OPENW, d.openWith)}</select></label>
+<label class="field"><span>열기 방식</span><select data-f="openWith">${openWithOpts(d)}</select></label>
 <div class="field"><span>메인 모델과 effort (Claude 구독)</span>${pairHTML('claude', 'main', d.main)}</div>
 <div class="field"><span>작업자 모델과 effort (GLM, z.ai)</span>${pairHTML('glm', 'worker', d.worker)}</div>
 </div>`;
@@ -125,12 +129,16 @@
   function rowHTML(p) {
     const main = p.mode === 'glm' ? '<div class="na">z.ai 단독 세션</div>' : pairHTML('claude', 'main', p.main);
     const work = p.mode === 'claude' ? '<div class="na">위임 안 함</div>' : pairHTML('glm', 'worker', p.worker);
+    const busy = opening.has(p.id);
+    const pathBtn = p.remote
+      ? `<button class="path" type="button" disabled title="${esc(p.remoteLabel || p.path)}">${esc(p.remoteLabel || p.path)}<span class="rbadge">원격</span></button>`
+      : `<button class="path" data-act="reveal" title="탐색기에서 열기">${esc(p.path)}</button>`;
     return `<div class="row ${esc(p.mode)}" data-id="${esc(p.id)}">
 <input type="checkbox" class="sel"${selected.has(p.id) ? ' checked' : ''} aria-label="${esc(p.name)} 선택">
 <div class="proj"><div class="name-line"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span><select class="mode" data-f="mode" aria-label="모드">${options(MODE, p.mode)}</select></div>
-<button class="path" data-act="reveal" title="탐색기에서 열기">${esc(p.path)}</button></div>
+${pathBtn}</div>
 ${main}${work}
-<div class="open"><button class="btn open-btn" data-act="open">열기</button><select data-f="openWith" aria-label="열기 방식">${options(OPENW, p.openWith)}</select></div>
+<div class="open"><button class="btn open-btn" data-act="open"${busy ? ' disabled' : ''}>${busy ? '연결 중…' : '열기'}</button><select data-f="openWith" aria-label="열기 방식">${openWithOpts(p)}</select></div>
 <button class="icon-btn" data-act="edit" aria-label="${esc(p.name)} 편집" title="이름·폴더·추가 인자">⋯</button>
 </div>`;
   }
@@ -151,7 +159,19 @@ ${main}${work}
   }
 
   // ── 목록 조작
-  async function openIds(ids, layout) {
+  async function openIds(ids, layout, force = false) {
+    const requested = [...new Set(ids || [])].filter(id => force || !opening.has(id)); // force = 런처 안 실패 시 wt 탭 폴백처럼 진행 중이어도 다시 열어야 하는 호출
+    if (!requested.length) return;
+    for (const id of requested) opening.add(id);
+    render(); // 원격 준비(1–3초) 동안 '연결 중…'으로 보여 주고 중복 클릭을 막는다
+    try {
+      await openRequested(requested, layout);
+    } finally {
+      for (const id of requested) opening.delete(id);
+      render();
+    }
+  }
+  async function openRequested(ids, layout) {
     if (!layout) { // '런처 안' 대상은 런처 탭으로, 나머지는 외부 터미널로
       const inapp = ids.map(id => S.config.projects.find(p => p.id === id)).filter(p => p && p.openWith === 'inapp');
       for (const p of inapp) await TermUI.open(p);
@@ -202,6 +222,7 @@ ${main}${work}
     if (row && !e.target.closest('select, button, input')) openIds([row.dataset.id]);
   });
   $('#btn-add').addEventListener('click', addFolders);
+  $('#btn-add-remote').addEventListener('click', () => openRemoteAddDialog());
   $('#btn-split').addEventListener('click', () => {
     const ids = S.config.projects.filter(p => selected.has(p.id)).map(p => p.id);
     if (ids.length < 2) { toast('분할 창으로 열 폴더를 2개 이상 선택하세요', 'warn'); return; }
@@ -359,19 +380,176 @@ ${userModelsHTML()}</section>
       });
     });
   }
+  // ── 원격(SSH) 폴더 추가·연결 확인·찾아보기
+  function remoteFormErr(f, { needPath = true } = {}) {
+    if (!f.host) return '호스트를 입력하세요';
+    if (/\s/.test(f.host)) return '호스트에 공백이 들어가면 안 됩니다';
+    if (f.user && /\s/.test(f.user)) return '사용자 이름에 공백이 들어가면 안 됩니다';
+    if (f.port && (!/^\d+$/.test(f.port) || !(Number(f.port) >= 1 && Number(f.port) <= 65535))) return '포트는 1–65535의 숫자입니다';
+    if (needPath && !f.path) return '원격 폴더 경로를 입력하세요';
+    return '';
+  }
+  const remoteConn = f => ({ host: f.host, user: f.user, port: f.port ? Number(f.port) : 22 });
+  function lastRemoteConn() {
+    for (let i = S.config.projects.length - 1; i >= 0; i--) { const r = S.config.projects[i].remote; if (r && r.host) return r; }
+    return null;
+  }
+  function showFormErr(root, msg) {
+    const el = root.querySelector('.form-err');
+    if (el) { el.textContent = msg; el.hidden = false; }
+  }
+  const checkItemsHTML = items => `<ul class="checks">${items.map(i => `<li class="${i.ok ? 'ok' : 'error'}"><i>${i.ok ? '✓' : '✕'}</i><b>${esc(i.label)}</b><span>${esc(i.detail || '')}</span></li>`).join('')}</ul>`;
+  /** 연결 확인 버튼(data-act="check-remote"). ids = 입력 필드별 셀렉터 { host, user, port, path } */
+  function wireRemoteCheck(root, ids) {
+    root.addEventListener('click', async e => {
+      const btn = e.target.closest('[data-act="check-remote"]');
+      if (!btn || btn.disabled) return;
+      const f = { host: '', user: '', port: '', path: '' };
+      for (const k of Object.keys(f)) { const el = root.querySelector(ids[k]); f[k] = el ? String(el.value || '').trim() : ''; }
+      const out = root.querySelector('.rc-out'), state = root.querySelector('.rc-state');
+      const err = remoteFormErr(f, { needPath: false });
+      if (err) { out.innerHTML = `<p class="form-err">${esc(err)}</p>`; return; }
+      btn.disabled = true; state.textContent = '확인 중…';
+      let r;
+      try { r = await api.remoteCheck(f); } catch (er) { r = { ok: false, error: errMsg(er) }; }
+      btn.disabled = false; state.textContent = '';
+      out.innerHTML = r && r.ok ? checkItemsHTML(r.items || []) : `<p class="form-err">${esc((r && r.error) || '확인하지 못했습니다')}</p>`;
+    });
+  }
+  /** 찾아보기 패널(data-act="browse-remote"로 열고닫음). 경로가 비어 있으면 드라이브 목록부터 */
+  function wireRemoteBrowse(root, ids) {
+    const panel = root.querySelector('.browse');
+    const st = { path: '', parent: null, dirs: [], error: '', busy: false };
+    function paint() {
+      panel.hidden = false;
+      panel.innerHTML = `<div class="browse-bar"><span class="path-code">${esc(st.path || '(드라이브 목록)')}</span><span class="grow"></span>
+<button type="button" class="btn sm" data-b="up"${st.parent == null || st.busy ? ' disabled' : ''}>위로</button>
+<button type="button" class="btn sm primary" data-b="pick"${!st.path || st.busy ? ' disabled' : ''}>이 폴더 선택</button></div>
+<div class="dirs">${st.busy ? '<p class="muted">불러오는 중…</p>'
+        : st.error ? `<p class="form-err">${esc(st.error)}</p>`
+          : (st.dirs.map(d => `<button type="button" class="dir" data-b="dir" data-dir="${esc(d)}" title="${esc(d)}"><span class="dir-ico" aria-hidden="true">📁</span>${esc(d)}</button>`).join('') || '<p class="muted">하위 폴더가 없습니다</p>')}</div>`;
+    }
+    async function load(path) {
+      if (st.busy) return;
+      st.busy = true; st.error = ''; paint();
+      const f = { host: '', user: '', port: '' };
+      for (const k of Object.keys(f)) { const el = root.querySelector(ids[k]); f[k] = el ? String(el.value || '').trim() : ''; }
+      let r;
+      try { r = await api.remoteList({ host: f.host, user: f.user, port: f.port, path }); }
+      catch (er) { r = { ok: false, error: errMsg(er) }; }
+      st.busy = false;
+      if (!r || !r.ok) { st.error = (r && r.error) || '폴더 목록을 가져오지 못했습니다'; paint(); return; }
+      st.path = r.path || ''; st.parent = r.parent == null ? null : r.parent; st.dirs = Array.isArray(r.dirs) ? r.dirs : [];
+      paint();
+    }
+    root.addEventListener('click', e => {
+      const open = e.target.closest('[data-act="browse-remote"]');
+      if (open) {
+        if (panel.hidden) { const el = root.querySelector(ids.path); load(el ? String(el.value || '').trim() : ''); }
+        else panel.hidden = true;
+        return;
+      }
+      const b = e.target.closest('[data-b]');
+      if (!b || !panel.contains(b) || b.disabled) return;
+      if (b.dataset.b === 'up') load(st.parent || '');
+      else if (b.dataset.b === 'pick') { const el = root.querySelector(ids.path); if (el) el.value = st.path; panel.hidden = true; }
+      else if (b.dataset.b === 'dir') {
+        const d = b.dataset.dir || '';
+        load(st.path ? `${st.path.replace(/[\\/]+$/, '')}\\${d}` : (/[\\/]$/.test(d) ? d : `${d}\\`));
+      }
+    });
+  }
+  function openRemoteAddDialog() {
+    const last = lastRemoteConn() || {};
+    openDialog(`<form class="dlg-body" id="radd" autocomplete="off">
+<div class="dlg-head"><h2>원격 폴더 추가</h2><button type="button" class="icon-btn" data-act="close" aria-label="닫기">✕</button></div>
+<p class="muted">미니PC(OpenSSH)의 폴더를 SSH로 엽니다. 호스트는 테일스케일 이름이나 IP를 씁니다. 처음 열 때 원격 준비에 1–3초 걸립니다.</p>
+<div class="grid2">
+<label class="field"><span>호스트 (필수)</span><input id="r-host" value="${esc(last.host || '')}" placeholder="mini-pc"></label>
+<label class="field"><span>사용자 (선택)</span><input id="r-user" value="${esc(last.user || '')}" placeholder="예: user1"></label>
+<label class="field"><span>포트 (선택, 기본 22)</span><input id="r-port" value="${esc(last.port ? String(last.port) : '')}" inputmode="numeric" placeholder="22"></label>
+<label class="field"><span>이름 (선택)</span><input id="r-name" placeholder="비워 두면 경로에서 정합니다"></label>
+</div>
+<label class="field"><span>원격 폴더 경로 (필수)</span><div class="inline"><input id="r-path" placeholder="C:\\dev\\project"><button type="button" class="btn sm" data-act="browse-remote">찾아보기</button></div></label>
+<div class="inline"><button type="button" class="btn sm" data-act="check-remote">연결 확인</button><span class="rc-state muted"></span></div>
+<div class="rc-out"></div>
+<div class="browse" hidden></div>
+<p class="form-err" hidden></p>
+<div class="actions"><span class="grow"></span><button type="button" class="btn" data-act="add-more">추가하고 계속</button><button type="submit" class="btn primary">추가</button></div>
+</form>`, root => {
+      const ids = { host: '#r-host', user: '#r-user', port: '#r-port', path: '#r-path' };
+      wireRemoteCheck(root, ids);
+      wireRemoteBrowse(root, ids);
+      const values = () => ({
+        host: root.querySelector('#r-host').value.trim(),
+        user: root.querySelector('#r-user').value.trim(),
+        port: root.querySelector('#r-port').value.trim(),
+        path: root.querySelector('#r-path').value.trim(),
+        name: root.querySelector('#r-name').value.trim(),
+      });
+      const resetAfterAdd = () => { // 이어서 추가: 연결 값은 유지하고 경로만 비운다
+        root.querySelector('#r-path').value = '';
+        root.querySelector('.rc-out').innerHTML = '';
+        root.querySelector('.browse').hidden = true;
+        const fe = root.querySelector('.form-err');
+        fe.textContent = '';
+        fe.hidden = true;
+      };
+      async function add(keep) {
+        const f = values();
+        const err = remoteFormErr(f);
+        if (err) { showFormErr(root, err); return; }
+        let r;
+        try { r = await api.addRemote({ ...remoteConn(f), path: f.path, name: f.name || undefined }); }
+        catch (er) { showFormErr(root, errMsg(er)); return; }
+        if (r && r.error) { showFormErr(root, r.error); return; }
+        S = r; render();
+        if (!keep) { closeDialog(); toast('원격 폴더를 추가했습니다', 'ok'); return; }
+        resetAfterAdd();
+        toast('추가했습니다. 다음 경로를 입력하세요', 'ok');
+      }
+      root.addEventListener('submit', e => { e.preventDefault(); add(false); });
+      root.addEventListener('click', e => {
+        const b = e.target.closest('[data-act]');
+        if (!b) return;
+        if (b.dataset.act === 'close') closeDialog();
+        else if (b.dataset.act === 'add-more') add(true);
+      });
+    });
+  }
+
   function openProjectDialog(p) {
+    const connField = p.remote
+      ? `<div class="grid2">
+<label class="field"><span>호스트</span><input id="p-host" value="${esc(p.remote.host || '')}"></label>
+<label class="field"><span>사용자 (선택)</span><input id="p-user" value="${esc(p.remote.user || '')}"></label>
+<label class="field"><span>포트 (선택, 기본 22)</span><input id="p-port" value="${esc(p.remote.port && p.remote.port !== 22 ? String(p.remote.port) : '')}" inputmode="numeric" placeholder="22"></label>
+<label class="field"><span>원격 폴더 경로</span><input id="p-rpath" value="${esc(p.path || '')}" placeholder="C:\\dev\\project"></label>
+</div>
+<div class="inline"><button type="button" class="btn sm" data-act="check-remote">연결 확인</button><span class="rc-state muted"></span></div>
+<div class="rc-out"></div>
+<p class="form-err" hidden></p>`
+      : `<div class="field"><span>폴더</span><div class="inline"><span class="path-code">${esc(p.path)}</span><button type="button" class="btn sm" data-act="change-path">바꾸기</button></div></div>`;
     openDialog(`<form class="dlg-body" id="proj" autocomplete="off">
 <div class="dlg-head"><h2>${esc(p.name)}</h2><button type="button" class="icon-btn" data-act="close" aria-label="닫기">✕</button></div>
 <label class="field"><span>이름</span><input id="p-name" value="${esc(p.name)}"></label>
-<div class="field"><span>폴더</span><div class="inline"><span class="path-code">${esc(p.path)}</span><button type="button" class="btn sm" data-act="change-path">바꾸기</button></div></div>
+${connField}
 <div id="p-prof">${profileHTML(p)}</div>
 <label class="field"><span>claude 추가 인자 (선택)</span><input id="p-extra" value="${esc(p.extraArgs || '')}" placeholder="--permission-mode plan"></label>
 <div class="actions"><button type="button" class="btn ghost danger" data-act="remove">목록에서 빼기</button><button type="button" class="btn ghost" data-act="up">위로</button><button type="button" class="btn ghost" data-act="down">아래로</button><span class="grow"></span><button type="submit" class="btn primary">저장</button></div>
 </form>`, root => {
       wirePairs(root);
+      if (p.remote) wireRemoteCheck(root, { host: '#p-host', user: '#p-user', port: '#p-port', path: '#p-rpath' });
       root.addEventListener('submit', async e => {
         e.preventDefault();
         const next = { ...p, ...readProfile(root.querySelector('#p-prof')), name: root.querySelector('#p-name').value.trim() || p.name, extraArgs: root.querySelector('#p-extra').value.trim() };
+        if (p.remote) {
+          const f = { host: root.querySelector('#p-host').value.trim(), user: root.querySelector('#p-user').value.trim(), port: root.querySelector('#p-port').value.trim(), path: root.querySelector('#p-rpath').value.trim() };
+          const err = remoteFormErr(f);
+          if (err) { showFormErr(root, err); return; } // 잘못된 값이면 저장하지 않고 기존 값을 유지
+          next.path = f.path;
+          next.remote = remoteConn(f);
+        }
         S = await call(api.saveProject, next); render(); closeDialog(); toast('저장했습니다', 'ok');
       });
       root.addEventListener('click', async e => {
@@ -406,6 +584,6 @@ ${userModelsHTML()}</section>
   setInterval(async () => {
     try { const st = await api.state(); S.rate = st.rate; S.keySaved = st.keySaved; renderTop(); } catch { /* 무시 */ }
   }, 60000);
-  TermUI.init({ esc, toast, errMsg, openFallback: id => openIds([id], 'wt') });
+  TermUI.init({ esc, toast, errMsg, openFallback: id => openIds([id], 'wt', true) });
   refresh().then(() => { if (S.firstRun) openSetup(); return TermUI.restore(); }).catch(e => toast(errMsg(e), 'err'));
 })();

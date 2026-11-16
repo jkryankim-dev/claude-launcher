@@ -77,7 +77,7 @@ test('실제 의사 터미널로 명령 실행 (크기 전달·TTY 확인)', { s
   const finished = new Promise(r => { done = r; });
   const host = createHost({ spawnPty: (f, a, o) => pty.spawn(f, a, o), send: (ch, d) => { sent.push([ch, d]); if (ch === 'term:exit') done(d); } });
   host.open({ file: process.execPath, args: ['-e', "process.stdout.write('pty-ok:' + process.stdout.isTTY + ':' + process.stdout.columns); setTimeout(() => {}, 300)"], cwd: process.cwd(), env: process.env, cols: 77, rows: 20 });
-  const ex = await Promise.race([finished, new Promise(r => setTimeout(() => r('timeout'), 15000))]);
+  const ex = await Promise.race([finished, new Promise(r => setTimeout(() => r('timeout'), 15000).unref())]);
   assert.notEqual(ex, 'timeout', '의사 터미널이 끝나지 않음');
   const text = sent.filter(x => x[0] === 'term:data').map(x => x[1].data).join('');
   assert.match(text, /pty-ok:true:77/);

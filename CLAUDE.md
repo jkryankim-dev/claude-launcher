@@ -6,6 +6,8 @@ Windows용 Electron 앱. 폴더별 모델·effort로 Claude Code를 연다. 메�
 - `src/main.js` Electron 메인(IPC, 업데이트), `src/preload.js` 렌더러용 좁은 API
 - `src/renderer/` 빌드 도구 없는 HTML/CSS/JS. `terminal.js`는 런처 안 터미널(xterm.js 탭)
 - `src/core/ptyhost.js` 런처 안 터미널의 의사 터미널 세션 관리(@lydell/node-pty = 미리 빌드된 node-pty, 컴파일 불필요)
+- `src/core/remote.js` 원격(SSH) 프로젝트의 ssh 인자·payload·원격 준비(prepareOpen)
+- `runtime/remote-apply.cjs` 원격 node가 표준 입력으로 받아 실행하는 설치·점검 스크립트(의존성 없는 단일 파일)
 - asar를 끈 이유: node-pty의 워커 스크립트·보조 실행 파일을 실제 파일 경로로 두기 위해. `build/installer.nsh`는 예전 버전의 app.asar를 지운다
 - `src/core/` Electron 없이 도는 순수 Node 모듈(테스트 대상). 로직은 여기에 둔다
 - `runtime/start-session.mjs` Windows Terminal 탭에서 실행되는 세션 시작기(앱이 `%APPDATA%\claude-launcher\runtime`에 복사)
@@ -16,6 +18,7 @@ Windows용 Electron 앱. 폴더별 모델·effort로 Claude Code를 연다. 메�
 ## 규칙
 - 테스트: `npm test` (node:test). 새 로직은 core/runtime/skills에 두고 테스트를 붙인다
 - 비밀값을 코드·카탈로그·세션 파일에 넣지 않는다(저장소 공개 전제). z.ai 키는 DPAPI 파일(zai-key.dpapi)에만 둔다
+- z.ai 키는 원격으로 보낼 때 표준 입력으로만 전달하고 명령줄·로그에 넣지 않는다. 원격에는 `zai-key.txt`(`plain:`)로 저장된다
 - 사용자 설정(`%APPDATA%\claude-launcher\config.json`) 형식을 바꿀 때는 `config.normalize`가 옛 형식도 받아들이게 한다
 
 ## 배포
