@@ -44,4 +44,14 @@ function semverLt(a, b) {
   for (let i = 0; i < 3; i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
   return false;
 }
-module.exports = { MIN_CLAUDE, resolve, command, parseVersion, semverLt };
+/** 채팅(SDK)이 pathToClaudeCodeExecutable로 직접 띄울 수 있는 네이티브 실행 파일 경로.
+ *  .cmd/.bat/.ps1 셔임이나 node+cli.js 형태는 자식 프로세스가 직접 실행하지 못하므로 null. */
+function resolveNative(env = process.env) {
+  const bin = resolve(env);
+  if (!bin || bin.shell || (bin.pre && bin.pre.length)) return null;
+  const ext = path.extname(bin.cmd).toLowerCase();
+  if (['.cmd', '.bat', '.ps1', '.js', '.mjs', '.cjs'].includes(ext)) return null;
+  if (/^node(\.exe)?$/i.test(path.basename(bin.cmd))) return null;
+  return bin.cmd;
+}
+module.exports = { MIN_CLAUDE, resolve, command, parseVersion, semverLt, resolveNative };

@@ -7,6 +7,9 @@ const { cleanEnv } = require('./proc');
 const remote = require('./remote');
 
 const TAB_COLOR = { split: '#534AB7', claude: '#5F5E5A', glm: '#0F6E56' }; // 런처 목록의 모드 색과 같음
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** 이어하기(resume)용 Claude Code 세션 id — UUID 형식인지(경로·명령 주입 방지) */
+const isSessionId = v => typeof v === 'string' && SESSION_ID_RE.test(v);
 
 function clean(s) { return String(s).replace(/[;"\r\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60); }
 function sessionTitle(p) {
@@ -78,4 +81,4 @@ function writeSessionFile(home, p, extra = {}) {
   fs.writeFileSync(f, JSON.stringify(sessionData(p, extra), null, 2));
   return f;
 }
-module.exports = { TAB_COLOR, sessionTitle, buildWtArgs, consoleCommand, openTerminal, openVSCode, findVSCode, sessionData, writeSessionFile };
+module.exports = { TAB_COLOR, sessionTitle, buildWtArgs, consoleCommand, openTerminal, openVSCode, findVSCode, sessionData, writeSessionFile, isSessionId };

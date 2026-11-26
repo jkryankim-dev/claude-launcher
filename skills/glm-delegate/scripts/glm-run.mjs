@@ -71,7 +71,9 @@ const HELP = `GLM 작업자 런처 — 메인 세션(설계·리뷰) → GLM(반
   node glm-run.mjs --check                                설치·연결 점검
 
 명세 머리말(선택): title, role(edit|scan), model(glm-5.3|flash|…), effort(low|high|max|off),
-  max_turns, timeout(분), scope(수정 허용 글롭, !제외), verify(검증 명령), allow_bash, report_lines
+  max_turns, timeout(분), scope(수정 허용 글롭, !제외), verify(검증 명령), allow_bash, report_lines,
+  persona(조직도 역할 id 또는 지침 파일 경로 — .studio/roles/<id>.md 지침을 프롬프트에 넣고
+  .studio/org.json의 model·effort를 기본값으로 쓴다)
 환경변수: GLM_MODEL, GLM_FAST_MODEL, GLM_EFFORT, GLM_MAX_TURNS, GLM_TIMEOUT_MIN, GLM_BASE_URL,
   GLM_CONFIG_DIR, GLM_CLAUDE_BIN, GLM_VERIFY_SHELL, GLM_PLAN(lite|pro|max), GLM_WORKER_ENV_<이름>
 z.ai 키: ZAI_API_KEY 환경변수, 없으면 Claude 런처 설정에 저장한 키를 자동으로 사용`;
@@ -242,7 +244,7 @@ function resolveRun(ctx, sel, pred) {
 }
 
 // ───────── 명세 파서 (간이 YAML 머리말) ─────────
-const SPEC_KEYS = new Set(['title', 'role', 'model', 'effort', 'max_turns', 'timeout', 'scope', 'allow_bash', 'verify', 'report_lines']);
+const SPEC_KEYS = new Set(['title', 'role', 'model', 'effort', 'max_turns', 'timeout', 'scope', 'allow_bash', 'verify', 'report_lines', 'persona']);
 const KEY_ALIAS = { maxturns: 'max_turns', allowbash: 'allow_bash', reportlines: 'report_lines' };
 function unquote(s) {
   s = String(s).trim();
@@ -296,12 +298,79 @@ function parseSpec(file) {
     }
   }
   for (const k of ['scope', 'allow_bash', 'verify']) if (fm[k] != null && !Array.isArray(fm[k])) fm[k] = [fm[k]];
-  for (const k of ['title', 'role', 'model', 'effort', 'max_turns', 'timeout', 'report_lines']) if (Array.isArray(fm[k])) fm[k] = fm[k][0] ?? '';
+  for (const k of ['title', 'role', 'model', 'effort', 'max_turns', 'timeout', 'report_lines', 'persona']) if (Array.isArray(fm[k])) fm[k] = fm[k][0] ?? '';
   body = body.trim();
   if (!body) die(`❌ 명세 본문이 비었습니다: ${file}`);
   const h1 = /^#\s+(.+)$/m.exec(body);
   const title = String(fm.title || (h1 && h1[1]) || path.basename(file, path.extname(file))).trim();
   return { raw, fm, body, title, warnings };
+}
+
+// ───────── 조직도 persona — .studio/roles/<id>.md 지침 + org.json 기본값 ─────────
+const PERSONA_ID_RE = /^[a-z][a-z0-9-]{1,39}$/;
+const ROLE_FILE_LIMIT = 32 * 1024;
+
+/** 지침 파일 읽기: studio:generated 주석 줄 제거, 32KB 초과면 자르고 경고. 없으면 null, 있으면 내용(빈 문자열 가능) */
+function loadRoleText(abs, label, warnings) {
+  let raw;
+  try { raw = fs.readFileSync(abs, 'utf8'); } catch { return null; }
+  let text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw;
+  text = text.replace(/\r\n?/g, '\n');
+  text = text.split('\n').filter(l => !/^\s*<!--\s*studio:generated\b.*?-->\s*$/.test(l)).join('\n').trim();
+  if (Buffer.byteLength(text, 'utf8') > ROLE_FILE_LIMIT) {
+    let lo = 0, hi = text.length; // 바이트 한도 안의 가장 긴 접두사(문자 경계)
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (Buffer.byteLength(text.slice(0, mid), 'utf8') <= ROLE_FILE_LIMIT) lo = mid; else hi = mid - 1;
+    }
+    text = text.slice(0, lo);
+    warnings.push(`역할 지침이 32KB를 넘어 잘렸음: ${label}`);
+  }
+  return text;
+}
+/** .studio/org.json에서 역할 찾기. 없으면 { role: null }, 깨졌으면 경고 문장만 담아 반환 */
+function orgRoleOf(ctx, id) {
+  const p = path.join(ctx.root, '.studio', 'org.json');
+  try { if (!fs.statSync(p).isFile()) return { role: null }; } catch { return { role: null }; }
+  const org = readJSON(p);
+  if (!org || typeof org !== 'object' || !Array.isArray(org.roles)) {
+    return { role: null, warn: '.studio/org.json을 해석할 수 없어 조직도 기본값을 건너뜀' };
+  }
+  return { role: org.roles.find(r => r && typeof r === 'object' && r.id === id) || null };
+}
+/** persona 머리말 값 해석. id면 .studio/roles/<id>.md + org.json, 경로면 그 파일(루트 밖이면 즉시 중단) */
+function resolvePersona(v, ctx) {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  const warnings = [];
+  if (PERSONA_ID_RE.test(s)) {
+    const org = orgRoleOf(ctx, s);
+    if (org.warn) warnings.push(org.warn);
+    const rel = `.studio/roles/${s}.md`;
+    const text = loadRoleText(path.join(ctx.root, rel), rel, warnings);
+    if (text == null) warnings.push(`역할 지침 파일 없음: ${rel} — studio sync를 돌렸는지 확인`);
+    let orgModel = null, orgEffort = null;
+    if (org.role && String(org.role.engine || '').toLowerCase() === 'claude') {
+      warnings.push(`${s}는 Claude 역할이다. Agent 도구로 불러야 한다 — 조직도의 모델은 무시한다.`);
+    } else if (org.role) {
+      const rm = org.role.model == null ? '' : String(org.role.model).trim();
+      if (rm) orgModel = rm;
+      const re = org.role.effort == null ? '' : String(org.role.effort).trim().toLowerCase();
+      if (re && EFFORTS.includes(re)) orgEffort = re;
+      else if (re) warnings.push(`조직도 ${s}의 effort 값 오류(무시): ${org.role.effort}`);
+    }
+    return { label: s, text: text || null, warnings, orgModel, orgEffort };
+  }
+  const rel = toRel(ctx.root, path.resolve(ctx.root, s));
+  if (rel == null) die(`❌ persona 경로가 저장소 루트를 벗어납니다: ${s}`);
+  const text = loadRoleText(path.join(ctx.root, rel), rel, warnings);
+  if (text == null) die(`❌ persona 지침 파일을 읽을 수 없습니다: ${rel}`);
+  return { label: rel, text, warnings, orgModel: null, orgEffort: null };
+}
+function personaBlock(p) {
+  return ['[역할 지침]',
+    `너는 이 스튜디오의 ${p.label} 역할이다. 아래 지침을 따르되, 작업 명세와 작업 규칙이 지침과 충돌하면 명세·규칙이 우선한다.`,
+    p.text].join('\n');
 }
 
 // ───────── 범위(scope) 글롭 — 대괄호는 글자 그대로(Next.js [id] 경로) ─────────
@@ -471,18 +540,20 @@ function infoBlock(cfg, ctx) {
       : '- 셸은 읽기 전용 명령과 git diff/status/log/show만 허용됨',
   ].filter(Boolean).join('\n');
 }
-function buildPrompt(spec, cfg, ctx) {
+function buildPrompt(spec, cfg, ctx, persona) {
   return [
     '너는 숙련된 코딩 작업자다. 설계자가 쓴 [작업 명세]를 완성도 높게 끝까지 수행한다. 대화 상대가 없으니 질문하지 말고 스스로 판단해 진행하고, 마지막 응답으로 보고서만 쓴다. 빨리 끝내는 것보다 빠짐없이·깊게·검증된 결과를 내는 것이 우선이다. 시간과 턴은 넉넉하니 아끼지 않는다.',
     '', '[작업 정보]', infoBlock(cfg, ctx),
+    ...(persona?.text ? ['', personaBlock(persona)] : []),
     '', `[작업 명세] ${spec.title}`, spec.body,
     '', '[작업 규칙]', cfg.role === 'scan' ? RULES_SCAN(cfg.reportLines) : RULES_EDIT(cfg.reportLines),
   ].join('\n');
 }
-function resumePrompt(spec, cfg, ctx) {
+function resumePrompt(spec, cfg, ctx, persona) {
   return [
     '[후속 지시] 앞 작업에 이어지는 지시다. 앞과 같은 [작업 규칙]과 보고 형식을 그대로 따른다.',
     '', '[작업 정보]', infoBlock(cfg, ctx),
+    ...(persona?.text ? ['', personaBlock(persona)] : []),
     '', `[후속 지시] ${spec.title}`, spec.body,
     '', `마지막 응답은 앞과 같은 형식의 보고서(${cfg.reportLines}줄 이내)로 쓴다.`,
   ].join('\n');
@@ -849,7 +920,7 @@ function buildSummary(m, report) {
   const head = m.status === 'done' ? (verFail ? '⚠ 완료 · 검증 실패' : '✅ 완료') : STATUS_LABEL[m.status] || m.status;
   const dur = Date.parse(m.endedAt) - Date.parse(m.startedAt);
   L.push(`[GLM] ${head} · ${m.id} · ${m.initModel || m.cfg.model} · ${m.turns ?? 0}턴 · ${fmtDur(dur)}`);
-  L.push(`작업: ${m.title}${m.parent ? ` (이어서: ${m.parent})` : ''}`);
+  L.push(`작업: ${m.title}${m.parent ? ` (이어서: ${m.parent})` : ''}${m.cfg?.persona ? ` · 역할 ${m.cfg.persona}` : ''}`);
   if (m.cause) L.push(`원인: ${m.cause}`);
   if (m.cfg.role === 'scan' && files.length) L.push(`⚠ 조사 작업인데 파일 ${files.length}개가 바뀌었습니다 → 되돌리기 권장`);
   if (files.length) {
@@ -913,8 +984,9 @@ async function cmdRun(specPath, o, parent = null) {
   const fm = spec.fm, base = parent?.cfg || {};
   const role = String(fm.role || base.role || 'edit').toLowerCase();
   if (!['edit', 'scan'].includes(role)) die(`❌ role은 edit 또는 scan 이어야 합니다: ${role}`);
-  const model = resolveModel(o.model || fm.model || base.model);
-  const effort = String(o.effort || fm.effort || base.effort || CFG.effort).toLowerCase();
+  const persona = resolvePersona(fm.persona || base.persona || '', ctx);
+  const model = resolveModel(o.model || fm.model || persona?.orgModel || base.model);
+  const effort = String(o.effort || fm.effort || persona?.orgEffort || base.effort || CFG.effort).toLowerCase();
   if (!EFFORTS.includes(effort)) die(`❌ effort 값 오류: ${effort} (${EFFORTS.join('|')})`);
   const maxTurns = posInt(o.maxTurns ?? fm.max_turns ?? base.maxTurns, CFG.maxTurns);
   const timeoutMin = posNum(o.timeout ?? fm.timeout ?? base.timeoutMin, CFG.timeoutMin);
@@ -923,13 +995,13 @@ async function cmdRun(specPath, o, parent = null) {
   const allowBash = [...new Set([...(fm.allow_bash ?? base.allowBash ?? []), ...verify])];
   const reportLines = posInt(fm.report_lines ?? base.reportLines, role === 'scan' ? Math.round(CFG.reportLines * 1.5) : CFG.reportLines);
   const title = parent ? (fm.title || `${parent.title} · 후속`) : spec.title;
-  const cfg = { role, model, effort, maxTurns, timeoutMin, scope, verify, allowBash, reportLines };
+  const cfg = { role, model, effort, maxTurns, timeoutMin, scope, verify, allowBash, reportLines, persona: persona ? persona.label : null };
 
   ensureExclude(ctx);
   const id = newRunId(), runDir = runDirOf(ctx, id);
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, 'spec.md'), spec.raw);
-  const prompt = parent ? resumePrompt(spec, cfg, ctx) : buildPrompt(spec, cfg, ctx);
+  const prompt = parent ? resumePrompt(spec, cfg, ctx, persona) : buildPrompt(spec, cfg, ctx, persona);
   fs.writeFileSync(path.join(runDir, 'prompt.md'), prompt);
   const snapAt = Date.now();
   const snap = snapshotTree(ctx, runDir, 'before');
@@ -946,10 +1018,11 @@ async function cmdRun(specPath, o, parent = null) {
     if (pm) { pm.children = [...new Set([...(pm.children || []), id])]; writeMeta(ctx, parent.id, pm); }
   }
   out(`[GLM] 시작 · ${id} · ${title}`);
-  out(`  ${role === 'scan' ? '조사' : '편집'} · ${model} · effort ${effort} · 최대 ${maxTurns}턴 · 제한 ${timeoutMin}분${parent ? ` · 이어서(${parent.id})` : ''}`);
+  out(`  ${role === 'scan' ? '조사' : '편집'} · ${model} · effort ${effort} · 최대 ${maxTurns}턴 · 제한 ${timeoutMin}분${persona ? ` · 역할 ${persona.label}` : ''}${parent ? ` · 이어서(${parent.id})` : ''}`);
   if (!ctx.isGit) out('  ⚠ git 저장소가 아니라 변경 추적·되돌리기가 제한됩니다.');
   else if (!snap) out('  ⚠ 스냅샷 실패 — 이번 실행은 되돌릴 수 없습니다.');
   for (const w of spec.warnings) out(`  ⚠ ${w}`);
+  for (const w of persona?.warnings || []) out(`  ⚠ ${w}`);
   if (role === 'edit' && !scope.length) out('  ⚠ scope 없음 — 범위 밖 변경을 검사하지 않습니다.');
   const rate0 = zaiRate(new Date());
   if (rate0.factor === 1) out(`  ⚠ z.ai ${rate0.label} — 비피크보다 크레딧이 2배 듭니다.`);
@@ -1034,7 +1107,7 @@ function cmdStatus(o) {
   if (m.status === 'running') {
     if (pidAlive(m.pid)) {
       const p = m.progress || {};
-      out(`[GLM] ⏳ 진행 중 · ${id} · ${m.title} · ${fmtDur(Date.now() - Date.parse(m.startedAt))} 경과 · 턴 ${p.turns ?? 0} · 편집 ${p.files ?? 0}파일${p.lastTool ? ` · 최근: ${p.lastTool}` : ''}`);
+      out(`[GLM] ⏳ 진행 중 · ${id} · ${m.title}${m.cfg?.persona ? ` · 역할 ${m.cfg.persona}` : ''} · ${fmtDur(Date.now() - Date.parse(m.startedAt))} 경과 · 턴 ${p.turns ?? 0} · 편집 ${p.files ?? 0}파일${p.lastTool ? ` · 최근: ${p.lastTool}` : ''}`);
       return 0;
     }
     out(`[GLM] ⚠ 비정상 종료 · ${id} · ${m.title} — 런처 프로세스가 없습니다.`);
@@ -1043,7 +1116,7 @@ function cmdStatus(o) {
   }
   let s = '';
   try { s = fs.readFileSync(path.join(runDirOf(ctx, id), 'summary.txt'), 'utf8').trimEnd(); } catch { /* 없음 */ }
-  out(s || `[GLM] ${STATUS_LABEL[m.status] || m.status} · ${id} · ${m.title}${m.cause ? `\n원인: ${m.cause}` : ''}`);
+  out(s || `[GLM] ${STATUS_LABEL[m.status] || m.status} · ${id} · ${m.title}${m.cfg?.persona ? ` · 역할 ${m.cfg.persona}` : ''}${m.cause ? `\n원인: ${m.cause}` : ''}`);
   if (m.rolledBack) out(`(되돌림: ${m.rolledBack.at})`);
   return 0;
 }

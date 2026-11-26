@@ -10,7 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const IS_WIN = process.platform === 'win32';
 const ZAI_URL = 'https://api.z.ai/api/anthropic';
@@ -19,6 +19,8 @@ const STRIP_EXACT = new Set(['CLAUDECODE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_ENT
   'CLAUDE_CODE_EFFORT_LEVEL', 'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT', 'CLAUDE_CODE_AUTO_COMPACT_WINDOW',
   'GLM_WORKER', 'GLM_DELEGATE', 'GLM_MODEL', 'GLM_EFFORT', 'GLM_KEY_FILE', 'GLM_BASE_URL', 'GLM_FAST_MODEL']);
 const MODE_NAME = { split: '분담', claude: 'Claude만', glm: 'GLM만' };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isUuid = v => typeof v === 'string' && UUID_RE.test(v);
 const useEffort = e => !!e && e !== 'off';
 
 export function launcherHome(env = process.env) {
@@ -49,6 +51,7 @@ export function buildSession(s, { env = process.env, key = '', home = os.homedir
     e[k] = v;
   }
   const args = [];
+  const warnings = [];
   let lines;
   if (s.mode === 'glm') {
     const m = s.worker.model;
@@ -81,8 +84,85 @@ export function buildSession(s, { env = process.env, key = '', home = os.homedir
     }
   }
   if (s.extraArgs) args.push(...splitArgs(s.extraArgs));
+  if (s.resume !== undefined && s.resume !== null && s.resume !== '') {
+    if (isUuid(s.resume)) args.push('--resume', s.resume);
+    else warnings.push(`이어하기(resume)를 무시했습니다 — 세션 id가 UUID 형식이 아닙니다: ${String(s.resume).slice(0, 40)}`);
+  }
+  if (s.ext && s.ext.studio === true && s.path) {
+    e.STUDIO_TOOL = defaultStudioTool();
+    e.STUDIO_ORG = path.join(s.path, '.studio', 'org.json');
+  }
   e.CLAUDE_LAUNCHER_PROJECT = s.name || '';
-  return { env: e, args, lines };
+  return { env: e, args, lines, warnings };
+}
+
+/** 이 시작기 옆에 함께 설치되는 스튜디오 도구(studio.mjs)의 절대 경로 */
+export function defaultStudioTool() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), 'studio.mjs');
+}
+
+/** ext.studio 세션에서 claude를 띄우기 전에 조직도를 심는다. 안내 문구 한두 줄을 돌려주고
+ *  어떤 실패도 던지지 않는다(실패는 경고 문구로만 — 세션 시작은 계속된다). */
+export async function runStudioEnsure(s, { tool = defaultStudioTool() } = {}) {
+  if (!s || !s.ext || s.ext.studio !== true) return [];
+  try {
+    const mod = await import(pathToFileURL(path.resolve(tool)).href);
+    const r = await mod.ensureStudio(s.path);
+    const lines = [];
+    if (r && r.seeded) lines.push('게임 스튜디오 조직도를 만들었습니다 — .studio/ORG.md');
+    if (r && Array.isArray(r.warnings)) for (const w of r.warnings.slice(0, 2)) lines.push(`스튜디오 경고: ${w}`);
+    return lines;
+  } catch (err) {
+    return [`스튜디오 조직도 심기 실패(세션은 계속합니다): ${String((err && err.message) || err).slice(0, 160)}`];
+  }
+}
+
+/** 사용자 extraArgs 문자열 → SDK 채팅 옵션. --dangerously-skip-permissions는 permissionMode
+ *  bypassPermissions로, --permission-mode X는 그 값으로(뒤에 오는 쪽이 이긴다), --model/--effort는
+ *  프로필 값을 쓰므로 무시, 나머지 --flag [value]는 extraArgs 객체({ flag: value | null })로 변환한다. */
+export function chatExtraArgs(str) {
+  const toks = splitArgs(str);
+  const out = {};
+  let permissionMode = null;
+  for (let i = 0; i < toks.length; i++) {
+    const t = toks[i];
+    if (typeof t !== 'string' || !t.startsWith('--')) continue; // 앞 flag가 가져가지 않은 값·위치 인자는 버린다
+    const body = t.slice(2);
+    const eq = body.indexOf('=');
+    const name = eq >= 0 ? body.slice(0, eq) : body;
+    if (!name) continue;
+    let value = eq >= 0 ? body.slice(eq + 1) : undefined;
+    if (value === undefined) {
+      const nxt = toks[i + 1];
+      if (typeof nxt === 'string' && nxt && !nxt.startsWith('--')) { value = nxt; i++; }
+    }
+    if (name === 'dangerously-skip-permissions') { permissionMode = 'bypassPermissions'; continue; }
+    if (name === 'permission-mode') { if (value) permissionMode = value; continue; }
+    if (name === 'model' || name === 'effort') continue; // 프로필 값 사용
+    out[name] = value === undefined ? null : value;
+  }
+  return { extraArgs: Object.keys(out).length ? out : undefined, permissionMode };
+}
+
+/** 채팅(런처 안 화면)용 세션 구성. 환경은 터미널 세션과 완전히 같은 코드 경로(buildSession)에서 나온다.
+ *  glm 모드의 configDir(대화 기록 위치)도 돌려준다. */
+export function buildChatSession(s, { env = process.env, key = '', home = os.homedir() } = {}) {
+  const b = buildSession(s, { env, key, home });
+  if (b.error) return { error: b.error };
+  const { extraArgs, permissionMode } = chatExtraArgs(s.extraArgs || '');
+  const worker = s.mode === 'glm';
+  const model = worker ? s.worker.model : s.main.model;
+  const effort = worker ? s.worker.effort : s.main.effort;
+  return {
+    env: b.env,
+    model,
+    effort: useEffort(effort) ? effort : null,
+    extraArgs,
+    permissionMode: permissionMode || null,
+    configDir: worker ? (b.env.CLAUDE_CONFIG_DIR || null) : null,
+    resume: isUuid(s.resume) ? s.resume : null,
+    warnings: b.warnings,
+  };
 }
 
 function readKey(file) {
@@ -163,7 +243,7 @@ function fail(msg, s) {
   openShell(s?.path && fs.existsSync(s.path) ? s.path : os.homedir(), process.env);
 }
 function visibleEnv(e) {
-  const keys = Object.keys(e).filter(k => /^(ANTHROPIC_|CLAUDE_|GLM_|API_TIMEOUT)/.test(k)).sort();
+  const keys = Object.keys(e).filter(k => /^(ANTHROPIC_|CLAUDE_|GLM_|API_TIMEOUT|STUDIO_)/.test(k)).sort();
   return Object.fromEntries(keys.map(k => [k, k === 'ANTHROPIC_AUTH_TOKEN' ? '***' : e[k]]));
 }
 
@@ -185,6 +265,8 @@ async function main() {
   const b = buildSession(s, { key: s.mode === 'glm' ? readKey(s.keyFile) : '' });
   if (b.error) return fail(b.error, s);
   header(s, b);
+  if (!dry && s.ext && s.ext.studio === true) for (const l of await runStudioEnsure(s)) out(l); // 실패해도 계속
+  for (const w of b.warnings || []) out(`\x1b[33m⚠\x1b[0m ${w}`);
   if (dry) { out(JSON.stringify({ args: b.args, env: visibleEnv(b.env) }, null, 2)); return; }
   const bin = resolveClaude();
   if (!bin) return fail('claude 명령을 찾을 수 없습니다. Claude Code 설치를 확인하세요.', s);

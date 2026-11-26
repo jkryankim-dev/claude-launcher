@@ -13,6 +13,10 @@ Windows용 Electron 앱. 폴더별 모델·effort로 Claude Code를 연다. 메�
 - `runtime/start-session.mjs` Windows Terminal 탭에서 실행되는 세션 시작기(앱이 `%APPDATA%\claude-launcher\runtime`에 복사)
 - `skills/glm-delegate/` GLM 위임 스킬(앱이 `~/.claude/skills`에 복사). `scripts/glm-run.mjs`는 의존성 없는 단일 파일
 - 작업자 프롬프트 문안은 glm-run.mjs의 RULES_EDIT/RULES_SCAN/buildPrompt에 있다. 작업자를 더 깊게 일하게 하려면 여기를 고친다
+- `src/renderer/workspace.js` 작업 공간(지난 대화 사이드바·위임 현황/조직도 패널), `src/renderer/chat.js` 채팅 화면, `src/renderer/lib/` DOM 없는 순수 함수(마크다운 렌더러 등, 테스트 대상)
+- `src/core/chat.js` 채팅 세션 호스트(Agent SDK로 설치된 claude.exe를 화면 없이 구동), `src/core/history.js` 대화 기록(~/.claude/projects) 읽기, `src/core/runs.js` GLM 위임 기록(.glm/runs) 읽기, `src/core/bridge.js` 이들을 IPC로 잇는 로직
+- `runtime/studio.mjs` 게임 스튜디오 조직도 도구(폴더의 `.studio/org.json` → `.claude/agents`·`.studio/roles`·CLAUDE.md 구간 생성). 폴더별 확장 옵션 `ext.studio`가 켜진 폴더를 열 때 start-session이 심는다. 기본 조직도는 `runtime/studio-org.default.json`
+- 위임 명세의 `persona: <역할 id>`는 조직도의 GLM 역할 지침·모델·effort를 작업자에 적용한다(glm-run.mjs)
 - `catalog.json` 모델·effort 목록. 설치된 앱이 main 브랜치의 이 파일을 받아 갱신한다
 
 ## 규칙

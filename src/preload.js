@@ -3,6 +3,7 @@
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const call = (ch, ...a) => ipcRenderer.invoke(ch, ...a);
+const subscribe = (ch, cb) => { const h = (_e, d) => cb(d); ipcRenderer.on(ch, h); return () => ipcRenderer.removeListener(ch, h); };
 contextBridge.exposeInMainWorld('api', {
   state: () => call('state'),
   addProjects: () => call('projects:add'),
@@ -35,7 +36,7 @@ contextBridge.exposeInMainWorld('api', {
   pathForFile: f => { try { return webUtils.getPathForFile(f); } catch { return ''; } },
   onEvent: cb => { ipcRenderer.on('event', (_e, data) => cb(data)); },
   // 런처 안 터미널
-  termOpen: (projectId, cols, rows) => call('term:open', projectId, cols, rows),
+  termOpen: (projectId, cols, rows, resume) => call('term:open', projectId, cols, rows, resume),
   termAttach: id => call('term:attach', id),
   termKill: id => call('term:kill', id),
   termList: () => call('term:list'),
@@ -43,4 +44,27 @@ contextBridge.exposeInMainWorld('api', {
   termResize: (id, cols, rows) => ipcRenderer.send('term:resize', id, cols, rows),
   onTermData: cb => { ipcRenderer.on('term:data', (_e, d) => cb(d)); },
   onTermExit: cb => { ipcRenderer.on('term:exit', (_e, d) => cb(d)); },
+  // 대화 기록(Claude Code)·GLM 실행 기록
+  historyList: (projectId, opts) => call('history:list', projectId, opts),
+  historyRead: (projectId, sessionId, opts) => call('history:read', projectId, sessionId, opts),
+  historySearch: (projectId, query) => call('history:search', projectId, query),
+  runsList: projectId => call('runs:list', projectId),
+  runsRead: (projectId, runId) => call('runs:read', projectId, runId),
+  runsWatch: projectId => call('runs:watch', projectId),
+  runsUnwatch: projectId => call('runs:unwatch', projectId),
+  onRunsChanged: cb => subscribe('runs:changed', cb),
+  // 스튜디오 조직도
+  studioOrg: projectId => call('studio:org', projectId),
+  // 런처 안 채팅
+  chatOpen: d => call('chat:open', d),
+  chatSend: (chatId, d) => call('chat:send', chatId, d),
+  chatRespond: (chatId, requestId, answer) => call('chat:respond', chatId, requestId, answer),
+  chatInterrupt: chatId => call('chat:interrupt', chatId),
+  chatClose: chatId => call('chat:close', chatId),
+  chatSetModel: (chatId, model) => call('chat:setModel', chatId, model),
+  chatSetPermissionMode: (chatId, mode) => call('chat:setPermissionMode', chatId, mode),
+  chatCommands: chatId => call('chat:commands', chatId),
+  chatList: () => call('chat:list'),
+  onChatEvent: cb => subscribe('chat:event', cb),
+  onChatRequestOpen: cb => subscribe('chat:request-open', cb),
 });

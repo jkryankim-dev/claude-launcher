@@ -1,10 +1,12 @@
 'use strict';
 /* global api, Terminal, FitAddon, WebLinksAddon, Unicode11Addon */
 // 런처 안 터미널: 탭마다 xterm.js 화면 하나. 실제 프로세스는 메인 프로세스의 의사 터미널(node-pty)이 돌린다.
+// 탭 줄(#tabs)은 workspace.js가 그린다(채팅 탭과 같은 줄). 여기서는 터미널 화면만 담당하고
+// 변화가 있을 때 deps.onTabs(), 활성화가 필요할 때 deps.onActivate(sid)로 알린다.
 window.TermUI = (() => {
   const $ = s => document.querySelector(s);
   const terms = new Map();
-  let active = 'projects';
+  let active = null;
   let deps = null;
   const pick = (g, name) => (g && (g[name] || g)) || null;
   const FitCtor = typeof FitAddon !== 'undefined' ? pick(FitAddon, 'FitAddon') : null;
@@ -16,41 +18,32 @@ window.TermUI = (() => {
     black: '#1e2126', red: '#e5797a', green: '#8fc163', yellow: '#e6b450', blue: '#79aee8', magenta: '#a99ff0', cyan: '#56c2a0', white: '#d5d7dc',
     brightBlack: '#6b717b', brightRed: '#f09595', brightGreen: '#a8d27f', brightYellow: '#f0c674', brightBlue: '#9cc5f0', brightMagenta: '#c2baf5', brightCyan: '#7fd6b9', brightWhite: '#f4f5f7',
   };
-  const esc = s => deps.esc(s);
 
-  function render() {
-    const el = $('#tabs');
-    el.hidden = terms.size === 0;
-    if (!terms.size) return;
-    const tabs = [`<button class="tab${active === 'projects' ? ' on' : ''}" data-tab="projects">프로젝트</button>`];
-    for (const t of terms.values()) {
-      tabs.push(`<button class="tab term-tab ${esc(t.mode)}${active === t.sid ? ' on' : ''}${t.alive ? '' : ' ended'}" data-tab="${esc(t.sid)}" title="${esc(t.title || t.name)}">`
-        + `<i class="dot ${esc(t.mode)}"></i><span class="tl">${esc(t.name)}</span><span class="x" data-close="${esc(t.sid)}" title="탭 닫기">×</span></button>`);
-    }
-    el.innerHTML = tabs.join('');
+  /** 터미널 열기 API 호출. 새 preload는 인자 객체 { projectId, cols, rows, resume }을 받고
+   *  옛 preload는 (projectId, cols, rows) 위치 인자를 쓴다. 함수 인자 수로 형태를 가려 호출한다. */
+  function termOpenApi(projectId, cols, rows, resume) {
+    if (typeof api.termOpen !== 'function') return Promise.resolve({ ok: false, message: '이 앱 버전에서는 런처 안 터미널을 열 수 없습니다' });
+    return api.termOpen.length >= 3 ? api.termOpen(projectId, cols, rows, resume) : api.termOpen({ projectId, cols, rows, resume });
   }
-  function activate(tab) {
-    if (tab !== 'projects' && !terms.has(tab)) tab = 'projects';
-    active = tab;
-    $('#view-projects').hidden = tab !== 'projects';
-    $('#view-term').hidden = tab === 'projects';
-    for (const t of terms.values()) t.el.hidden = t.sid !== tab;
-    render();
-    const t = terms.get(tab);
-    if (t) requestAnimationFrame(() => { fit(t); t.term.focus(); });
+
+  function show(sid) {
+    if (!terms.has(sid)) sid = null;
+    active = sid;
+    for (const t of terms.values()) t.el.hidden = t.sid !== sid;
+    if (sid) {
+      const t = terms.get(sid);
+      requestAnimationFrame(() => { fit(t); t.term.focus(); });
+    }
   }
   function fit(t) {
     if (!t || t.el.hidden) return;
     try { t.fit.fit(); api.termResize(t.sid, t.term.cols, t.term.rows); } catch { /* 크기가 0일 때 */ }
   }
-  function cycle(dir) {
-    const order = ['projects', ...terms.keys()];
-    activate(order[(order.indexOf(active) + dir + order.length) % order.length]);
-  }
+  function fitActive() { if (active) fit(terms.get(active)); }
   function markEnded(t, code) {
     t.alive = false;
     t.term.write(`\r\n\x1b[2m[세션이 끝났습니다${code != null ? ` (코드 ${code})` : ''}. 탭을 닫거나 목록에서 다시 여세요]\x1b[0m\r\n`);
-    render();
+    if (deps.onTabs) deps.onTabs();
   }
   function copySel(t) {
     const s = t.term.getSelection();
@@ -91,6 +84,7 @@ window.TermUI = (() => {
       else navigator.clipboard.readText().then(s => { if (s) term.paste(s); }).catch(() => {});
     });
     terms.set(t.sid, t);
+    if (deps.onTabs) deps.onTabs();
     return t;
   }
   async function attach(t) {
@@ -102,54 +96,45 @@ window.TermUI = (() => {
     t.attached = true;
     if (!a.alive) markEnded(t, a.code);
   }
-  async function open(p) {
+  /** 프로젝트 터미널 열기. opts.resume에 Claude 세션 id를 넣으면 그 대화를 이어서 연다(항상 새 탭). */
+  async function open(p, opts = {}) {
     const live = [...terms.values()].find(t => t.projectId === p.id && t.alive);
-    if (live) { activate(live.sid); return; }
-    if (!available) { deps.toast('런처 안 터미널 부품을 불러오지 못해 터미널 탭으로 엽니다', 'warn'); deps.openFallback(p.id); return; }
+    if (live && !opts.resume) { if (deps.onActivate) deps.onActivate(live.sid); return live.sid; }
+    if (!available) { deps.toast('런처 안 터미널 부품을 불러오지 못해 터미널 탭으로 엽니다', 'warn'); deps.openFallback(p.id); return null; }
     let r;
-    try { r = await api.termOpen(p.id, 120, 32); } catch (e) { deps.toast(deps.errMsg(e), 'err'); return; }
+    try { r = await termOpenApi(p.id, 120, 32, opts.resume || undefined); }
+    catch (e) { deps.toast(deps.errMsg(e), 'err'); return null; }
     if (!r.ok) {
       deps.toast(r.message || '열지 못했습니다', r.fallback ? 'warn' : 'err');
       if (r.fallback) deps.openFallback(p.id);
-      return;
+      return null;
     }
     const t = add(r);
-    activate(t.sid);
+    if (deps.onActivate) deps.onActivate(t.sid);
     await attach(t);
+    return t.sid;
   }
   async function close(sid) {
     const t = terms.get(sid);
-    if (!t) return;
-    if (t.alive && !confirm(`${t.name} 세션을 끝낼까요? 실행 중인 작업도 멈춥니다.`)) return;
+    if (!t) return true;
+    if (t.alive && !confirm(`${t.name} 세션을 끝낼까요? 실행 중인 작업도 멈춥니다.`)) return false;
     try { await api.termKill(sid); } catch { /* 무시 */ }
     t.term.dispose();
     t.el.remove();
     terms.delete(sid);
-    if (active === sid) { const rest = [...terms.keys()]; activate(rest.length ? rest[rest.length - 1] : 'projects'); }
-    else render();
+    if (active === sid) active = null;
+    if (deps.onTabs) deps.onTabs();
+    return true;
   }
   async function restore() {
     if (!available) return;
     let list = [];
     try { list = await api.termList(); } catch { /* 없음 */ }
-    for (const s of list) { if (!terms.has(s.id)) await attach(add(s)); }
-    if (list.length) activate(list[list.length - 1].id);
+    for (const s of list) if (!terms.has(s.id)) await attach(add(s));
+    if (list.length && deps.onRestore) deps.onRestore(list[list.length - 1].id);
   }
   function init(d) {
     deps = d;
-    $('#tabs').addEventListener('click', e => {
-      const x = e.target.closest('[data-close]');
-      if (x) { e.stopPropagation(); close(x.dataset.close); return; }
-      const b = e.target.closest('[data-tab]');
-      if (b) activate(b.dataset.tab);
-    });
-    $('#tabs').addEventListener('auxclick', e => {
-      const b = e.target.closest('[data-tab]');
-      if (e.button === 1 && b && b.dataset.tab !== 'projects') close(b.dataset.tab);
-    });
-    document.addEventListener('keydown', e => {
-      if (e.ctrlKey && e.key === 'Tab' && terms.size) { e.preventDefault(); cycle(e.shiftKey ? -1 : 1); }
-    });
     if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => fit(terms.get(active))).observe($('#view-term'));
     api.onTermData(m => {
       const t = terms.get(m.id);
@@ -159,5 +144,6 @@ window.TermUI = (() => {
     });
     api.onTermExit(m => { const t = terms.get(m.id); if (t && t.alive) markEnded(t, m.code); });
   }
-  return { init, open, restore, available, count: () => terms.size };
+  const tabs = () => [...terms.values()].map(t => ({ sid: t.sid, projectId: t.projectId, name: t.name, mode: t.mode, title: t.title, alive: t.alive }));
+  return { init, open, restore, close, show, tabs, fitActive, available, count: () => terms.size };
 })();

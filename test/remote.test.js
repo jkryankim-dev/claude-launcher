@@ -99,6 +99,14 @@ test('collectFiles: 중첩 폴더·/ 구분·정렬·없는 폴더', () => {
   assert.deepEqual(remote.collectFiles(path.join(d, '없는폴더'), 'runtime'), []);
 });
 
+test('원격 payload: 런처 runtime 폴더 전체에 studio.mjs·studio-org.default.json이 포함된다', () => {
+  const rels = remote.collectFiles(path.join(ROOT, 'runtime'), 'runtime').map(x => x.rel);
+  assert.ok(rels.includes('runtime/studio.mjs'), 'studio.mjs가 원격 복사 목록에 있음');
+  assert.ok(rels.includes('runtime/studio-org.default.json'), '기본 조직도 JSON도 함께 감');
+  assert.ok(rels.includes('runtime/start-session.mjs'));
+  assert.ok(rels.includes('runtime/remote-apply.cjs'));
+});
+
 test('buildPayload/buildAgentScript: 기본값·listPath 빈 문자열·스크립트 조립', () => {
   assert.deepEqual(remote.buildPayload(), { v: 1, files: [], session: null, claudeMd: null, key: null, checkPath: null, listPath: null });
   const p = remote.buildPayload({ key: '', listPath: '', claudeMd: { text: 'x' } });

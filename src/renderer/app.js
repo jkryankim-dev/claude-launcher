@@ -4,7 +4,8 @@
   const $ = (s, r = document) => r.querySelector(s);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const MODE = { split: '분담', claude: 'Claude만', glm: 'GLM만' };
-  const OPENW = { inapp: '런처 안', tab: '터미널 탭', window: '새 창', vscode: 'VS Code' };
+  const OPENW = { inapp: '런처 안', chat: '채팅(런처 안)', tab: '터미널 탭', window: '새 창', vscode: 'VS Code' };
+  const CHAT_OK = typeof api.chatOpen === 'function' && typeof api.onChatEvent === 'function' && typeof api.chatSend === 'function';
   const ICON = { ok: '✓', warn: '!', error: '✕', info: 'i' };
   const dlg = $('#dlg'), dlgOut = $('#dlg-out');
   let S = null;
@@ -53,26 +54,32 @@
       + `<select data-f="${key}.effort" aria-label="${who} effort">${effortOptions(effortsFor(kind, v.model), v.effort)}</select></div>`;
   }
   const options = (map, cur) => Object.entries(map).map(([k, v]) => `<option value="${k}"${k === cur ? ' selected' : ''}>${v}</option>`).join('');
-  // 원격 프로젝트는 VS Code로 열 수 없다. 저장값이 VS Code여도 화면에는 런처 안(터미널)으로 보여 준다
-  const openWithShown = p => (p.remote && p.openWith === 'vscode' ? 'inapp' : p.openWith);
-  const openWithOpts = p => Object.entries(OPENW).map(([k, v]) => `<option value="${k}"${k === openWithShown(p) ? ' selected' : ''}${p.remote && k === 'vscode' ? ' disabled' : ''}>${v}</option>`).join('');
+  // 원격 프로젝트는 VS Code·채팅으로 열 수 없다. 저장값이 그 값이어도 화면에는 런처 안(터미널)으로 보여 준다.
+  // 채팅 API가 없는 앱 버전에서도 같다(기능이 비활성).
+  const openWithShown = p => (p.remote || !CHAT_OK) && (p.openWith === 'vscode' || p.openWith === 'chat') ? 'inapp' : p.openWith;
+  const openWithOpts = p => Object.entries(OPENW).map(([k, v]) => `<option value="${k}"${k === openWithShown(p) ? ' selected' : ''}${(p.remote || !CHAT_OK) && k === 'chat' ? ' disabled' : ''}${p.remote && k === 'vscode' ? ' disabled' : ''}>${v}</option>`).join('');
   function profileText(d) {
     const e = x => (x === 'off' ? '' : ` ${x}`);
     if (d.mode === 'glm') return `GLM만, ${modelLabel('glm', d.worker.model)}${e(d.worker.effort)}`;
     const main = `${modelLabel('claude', d.main.model)}${e(d.main.effort)}`;
     return d.mode === 'claude' ? `Claude만, ${main}` : `분담, 메인 ${main} / 작업자 ${modelLabel('glm', d.worker.model)}${e(d.worker.effort)}`;
   }
-  function profileHTML(d) {
+  function profileHTML(d, opts = {}) {
     return `<div class="grid2">
 <label class="field"><span>모드</span><select data-f="mode">${options(MODE, d.mode)}</select></label>
 <label class="field"><span>열기 방식</span><select data-f="openWith">${openWithOpts(d)}</select></label>
 <div class="field"><span>메인 모델과 effort (Claude 구독)</span>${pairHTML('claude', 'main', d.main)}</div>
 <div class="field"><span>작업자 모델과 effort (GLM, z.ai)</span>${pairHTML('glm', 'worker', d.worker)}</div>
-</div>`;
+</div>
+${opts.studio ? `<label class="check"><input type="checkbox" data-f="ext.studio"${d.ext && d.ext.studio ? ' checked' : ''}> 확장: 게임 스튜디오 조직도</label>
+<p class="muted">켜면 이 폴더를 열 때 조직도 파일(.studio/, .claude/agents/, CLAUDE.md 구간)을 만듭니다</p>` : ''}`;
   }
   function readProfile(root) {
     const g = f => { const el = root.querySelector(`[data-f="${f}"]`); return el ? el.value : undefined; };
-    return { mode: g('mode'), openWith: g('openWith'), main: { model: g('main.model'), effort: g('main.effort') }, worker: { model: g('worker.model'), effort: g('worker.effort') } };
+    const out = { mode: g('mode'), openWith: g('openWith'), main: { model: g('main.model'), effort: g('main.effort') }, worker: { model: g('worker.model'), effort: g('worker.effort') } };
+    const ext = root.querySelector('[data-f="ext.studio"]');
+    if (ext) out.ext = { studio: ext.checked }; // 체크칸이 있는 대화상자(프로젝트 편집)에서만 저장한다
+    return out;
   }
   function wirePairs(root) {
     root.addEventListener('change', e => {
@@ -87,7 +94,7 @@
 
   // ── 화면
   async function refresh() { S = await api.state(); render(); }
-  function render() { renderTop(); renderBanner(); renderList(); renderFoot(); }
+  function render() { renderTop(); renderBanner(); renderList(); renderFoot(); WS.refreshProjects(); }
   const chip = (level, label, title) => `<span class="chip ${level}" title="${esc(title)}"><i>${ICON[level] || ''}</i>${esc(label)}</span>`;
   const pendingCount = () => {
     const u = S.update || {};
@@ -133,9 +140,10 @@
     const pathBtn = p.remote
       ? `<button class="path" type="button" disabled title="${esc(p.remoteLabel || p.path)}">${esc(p.remoteLabel || p.path)}<span class="rbadge">원격</span></button>`
       : `<button class="path" data-act="reveal" title="탐색기에서 열기">${esc(p.path)}</button>`;
+    const studio = p.ext && p.ext.studio ? '<span class="studio-badge" title="게임 스튜디오 조직도 확장 켜짐">스튜디오</span>' : '';
     return `<div class="row ${esc(p.mode)}" data-id="${esc(p.id)}">
 <input type="checkbox" class="sel"${selected.has(p.id) ? ' checked' : ''} aria-label="${esc(p.name)} 선택">
-<div class="proj"><div class="name-line"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span><select class="mode" data-f="mode" aria-label="모드">${options(MODE, p.mode)}</select></div>
+<div class="proj"><div class="name-line"><span class="name" title="${esc(p.name)}">${esc(p.name)}</span>${studio}<select class="mode" data-f="mode" aria-label="모드">${options(MODE, p.mode)}</select></div>
 ${pathBtn}</div>
 ${main}${work}
 <div class="open"><button class="btn open-btn" data-act="open"${busy ? ' disabled' : ''}>${busy ? '연결 중…' : '열기'}</button><select data-f="openWith" aria-label="열기 방식">${openWithOpts(p)}</select></div>
@@ -172,10 +180,17 @@ ${main}${work}
     }
   }
   async function openRequested(ids, layout) {
-    if (!layout) { // '런처 안' 대상은 런처 탭으로, 나머지는 외부 터미널로
-      const inapp = ids.map(id => S.config.projects.find(p => p.id === id)).filter(p => p && p.openWith === 'inapp');
+    if (!layout) { // 여는 방식별로: 채팅·런처 안은 앱 안에서, 나머지는 외부 터미널로
+      const profs = ids.map(id => S.config.projects.find(p => p.id === id)).filter(Boolean);
+      for (const p of profs.filter(p => p.openWith === 'chat')) {
+        if (CHAT_OK) WS.openChat(p);
+        else await TermUI.open(p); // 채팅을 못 쓰는 버전이면 런처 안(터미널)으로
+      }
+      const done = new Set(profs.filter(p => p.openWith === 'chat').map(p => p.id));
+      const inapp = profs.filter(p => p.openWith === 'inapp' && !done.has(p.id));
       for (const p of inapp) await TermUI.open(p);
-      ids = ids.filter(id => !inapp.some(p => p.id === id));
+      const seen = new Set([...done, ...inapp.map(p => p.id)]);
+      ids = ids.filter(id => !seen.has(id));
       if (!ids.length) return;
     }
     const r = await call(api.open, ids, layout);
@@ -534,7 +549,7 @@ ${userModelsHTML()}</section>
 <div class="dlg-head"><h2>${esc(p.name)}</h2><button type="button" class="icon-btn" data-act="close" aria-label="닫기">✕</button></div>
 <label class="field"><span>이름</span><input id="p-name" value="${esc(p.name)}"></label>
 ${connField}
-<div id="p-prof">${profileHTML(p)}</div>
+<div id="p-prof">${profileHTML(p, { studio: true })}</div>
 <label class="field"><span>claude 추가 인자 (선택)</span><input id="p-extra" value="${esc(p.extraArgs || '')}" placeholder="--permission-mode plan"></label>
 <div class="actions"><button type="button" class="btn ghost danger" data-act="remove">목록에서 빼기</button><button type="button" class="btn ghost" data-act="up">위로</button><button type="button" class="btn ghost" data-act="down">아래로</button><span class="grow"></span><button type="submit" class="btn primary">저장</button></div>
 </form>`, root => {
@@ -584,6 +599,37 @@ ${connField}
   setInterval(async () => {
     try { const st = await api.state(); S.rate = st.rate; S.keySaved = st.keySaved; renderTop(); } catch { /* 무시 */ }
   }, 60000);
-  TermUI.init({ esc, toast, errMsg, openFallback: id => openIds([id], 'wt', true) });
+  // ── 작업 공간(사이드바·채팅·패널) 연결
+  TermUI.init({ esc, toast, errMsg, openFallback: id => openIds([id], 'wt', true), onTabs: () => WS.syncTerms(), onActivate: sid => WS.onTermActivate(sid), onRestore: sid => WS.onTermRestore(sid) });
+  ChatUI.init({
+    esc, toast, errMsg,
+    models: kind => models(kind),
+    onSession: id => WS.addChat(id),
+    onActivate: id => WS.addChat(id),
+    onClosed: id => WS.removeChat(id),
+    onState: (c, t) => { WS.chatState(c, t); if (t === 'result') WS.onChatResult(); },
+    openTerm: (p, sid) => WS.openTerm(p, sid),
+  });
+  WS.init({ esc, toast, errMsg, projects: () => (S && S.config ? S.config.projects : []) });
+  $('#view-switch').addEventListener('click', e => {
+    const b = e.target.closest('[data-v]');
+    if (b) WS.setView(b.dataset.v);
+  });
+  // 마크다운 결과물 안: 코드 복사 버튼과 http(s) 링크(외부 브라우저로)
+  document.addEventListener('click', e => {
+    const cp = e.target.closest('.md-copy');
+    if (cp) {
+      const box = cp.closest('.md-code');
+      const pre = box && box.querySelector('pre');
+      if (pre) navigator.clipboard.writeText(pre.textContent).then(() => toast('복사했습니다')).catch(() => {});
+      return;
+    }
+    const a = e.target.closest('.md a[href]');
+    if (a) {
+      e.preventDefault();
+      const href = a.getAttribute('href') || '';
+      if (/^https?:/i.test(href)) call(api.openExternal, href);
+    }
+  });
   refresh().then(() => { if (S.firstRun) openSetup(); return TermUI.restore(); }).catch(e => toast(errMsg(e), 'err'));
 })();

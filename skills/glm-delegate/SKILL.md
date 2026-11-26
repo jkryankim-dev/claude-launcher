@@ -40,6 +40,7 @@ verify:                    # 끝난 뒤 런처가 직접 다시 돌리는 검증
   - npx tsc --noEmit
 # model: flash             # 아주 단순한 치환이면 glm-5.3-flash
 # effort: low              # 기본이 max다. 아주 단순한 치환만 low
+# persona: gameplay-programmer  # 조직도 모드 폴더에서 GLM 역할에게 맡길 때 역할 id
 ---
 ## 목표
 에러 응답을 `src/lib/apiError.ts`의 `apiError(status, message)`로 통일한다.
@@ -85,6 +86,8 @@ src/components 아래 JSX 텍스트 중 t()로 감싸지 않은 한글 문자열
 - 수정 제안: 각 항목을 어떤 t() 키로 바꿀지
 - 공통 패턴: 컴포넌트들이 번역을 빠뜨린 공통 원인·패턴 정리
 ~~~
+
+조직도 모드 폴더(`.studio/org.json`이 있는 폴더)에서는 GLM 역할에게 맡길 때 persona를 적는다. 값은 역할 id(예: `persona: gameplay-programmer`)로 적고, `.studio/roles/<id>.md` 지침이 작업자 프롬프트에 들어가며 org.json의 그 역할 model·effort가 기본값이 된다(명세 머리말의 model·effort가 있으면 그쪽이 우선). 지침 파일이 없으면 경고만 내고 계속한다.
 
 ## 3. 실행
 

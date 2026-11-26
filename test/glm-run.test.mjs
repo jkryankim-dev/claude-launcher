@@ -366,3 +366,195 @@ test('병렬 실행: 마무리 중에 끼어든 늦은 실행의 변경도 가�
   assert.match(b.out, /M src\/b\.ts/, b.out);
   assert.doesNotMatch(b.out, /src\/a\.ts/, b.out);
 });
+
+// ───────── persona(조직도 역할) ─────────
+const ROLE_MD = `<!-- studio:generated at=2026-11-01T00:00:00Z by=claude-launcher -->
+# 게임플레이 프로그래머 지침
+- 테스트 없는 기능은 머지 금지.
+- 프레임 예산 0.5ms 이내 유지.
+<!-- studio:generated hash=deadbeef -->
+`;
+function makeStudio(dir, roles, { broken = false } = {}) {
+  write(dir, '.studio/org.json', broken ? '{broken json' : JSON.stringify({ schema: 1, roles }, null, 2));
+  for (const r of roles) write(dir, `.studio/roles/${r.id}.md`, r.file ?? ROLE_MD);
+}
+const ROLE_GLM = { id: 'gameplay-programmer', engine: 'glm', model: 'glm-4.7', effort: 'xhigh', name: '게임플레이 프로그래머' };
+function personaSpec(persona, extraFm = '') {
+  return `---
+title: 페르소나 테스트
+role: edit
+scope: [src]
+${persona ? `persona: ${persona}\n` : ''}${extraFm}---
+## 목표
+src/a.ts에 주석을 추가한다.
+`;
+}
+const runsOf = dir => fs.readdirSync(path.join(dir, '.glm/runs')).sort();
+const promptAt = (dir, i) => fs.readFileSync(path.join(dir, '.glm/runs', runsOf(dir)[i], 'prompt.md'), 'utf8');
+const metaAt = (dir, i) => readLog(path.join(dir, '.glm/runs', runsOf(dir)[i], 'meta.json'));
+
+test('persona id: 역할 지침 블록 + org.json model·effort 기본값', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [ROLE_GLM]);
+  const log = path.join(TMP, 'log-persona.json');
+  const r = run([spec(dir, 'persona.md', personaSpec('gameplay-programmer'))], dir, { MOCK_LOG: log });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /편집 · glm-4\.7 · effort xhigh · 최대 200턴 · 제한 60분 · 역할 gameplay-programmer/);
+  assert.doesNotMatch(r.out, /org\.json/);
+
+  const p = promptOf(dir);
+  assert.match(p, /\[역할 지침\]/);
+  assert.match(p, /너는 이 스튜디오의 gameplay-programmer 역할이다\. 아래 지침을 따르되, 작업 명세와 작업 규칙이 지침과 충돌하면 명세·규칙이 우선한다\./);
+  assert.match(p, /테스트 없는 기능은 머지 금지/);
+  assert.doesNotMatch(p, /studio:generated/);
+  assert.ok(p.indexOf('[작업 정보]') < p.indexOf('[역할 지침]') && p.indexOf('[역할 지침]') < p.indexOf('[작업 명세] 페르소나 테스트'), '블록 순서: 작업 정보 < 역할 지침 < 작업 명세');
+
+  const L = readLog(log);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-4.7');
+  assert.equal(L.env.CLAUDE_CODE_EFFORT_LEVEL, 'xhigh');
+  assert.match(L.stdin, /\[역할 지침\]/);
+  assert.equal(metaAt(dir, 0).cfg.persona, 'gameplay-programmer');
+  assert.match(run(['--status', 'latest'], dir).out, /역할 gameplay-programmer/);
+});
+
+test('persona 없음: 기존 프롬프트 그대로(역할 지침 블록 없음)', () => {
+  const dir = makeRepo();
+  const r = run([spec(dir)], dir, { MOCK_FILES: 'src/a.ts' });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.doesNotMatch(promptOf(dir), /\[역할 지침\]/);
+  assert.doesNotMatch(promptOf(dir), /스튜디오의/);
+  assert.doesNotMatch(r.out, /역할 /);
+  assert.equal(metaAt(dir, 0).cfg.persona, null);
+});
+
+test('persona 모델 우선순위: 명세 머리말 > 조직도, 명령줄 인자 > 머리말', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [ROLE_GLM]);
+  const la = path.join(TMP, 'log-prio-a.json');
+  let r = run([spec(dir, 'pa.md', personaSpec('gameplay-programmer', 'model: flash\neffort: high\n'))], dir, { MOCK_LOG: la });
+  assert.equal(r.code, 0, r.out + r.err);
+  let L = readLog(la);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-5.3-flash', '머리말 model이 조직도보다 우선');
+  assert.equal(L.env.CLAUDE_CODE_EFFORT_LEVEL, 'high', '머리말 effort가 조직도보다 우선');
+  const lb = path.join(TMP, 'log-prio-b.json');
+  r = run([spec(dir, 'pb.md', personaSpec('gameplay-programmer', 'model: flash\n')), '--model', 'glm-4.6'], dir, { MOCK_LOG: lb });
+  assert.equal(r.code, 0, r.out + r.err);
+  L = readLog(lb);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-4.6', '명령줄 --model이 머리말보다 우선');
+});
+
+test('조직도 model이 flash 별칭이면 fastModel로 해석', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [{ ...ROLE_GLM, model: 'flash' }]);
+  const log = path.join(TMP, 'log-flash.json');
+  const r = run([spec(dir, 'flash.md', personaSpec('gameplay-programmer'))], dir, { MOCK_LOG: log });
+  assert.equal(r.code, 0, r.out + r.err);
+  const L = readLog(log);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-5.3-flash');
+});
+
+test('engine claude 역할: 경고 출력, 조직도 모델 무시, 지침은 포함', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [{ ...ROLE_GLM, engine: 'claude' }]);
+  const log = path.join(TMP, 'log-claude.json');
+  const r = run([spec(dir, 'claude.md', personaSpec('gameplay-programmer'))], dir, { MOCK_LOG: log });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /gameplay-programmer는 Claude 역할이다\. Agent 도구로 불러야 한다/);
+  const L = readLog(log);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-5.3', '조직도 모델 무시 → 기본 모델');
+  assert.match(L.stdin, /\[역할 지침\]/);
+  assert.match(promptOf(dir), /테스트 없는 기능은 머지 금지/);
+});
+
+test('지침 파일 없는 id: 경고만 내고 정상 실행', () => {
+  const dir = makeRepo();
+  makeStudio(dir, []); // org.json에는 역할 없음, roles 폴더도 비움
+  const r = run([spec(dir, 'missing.md', personaSpec('no-such-role'))], dir);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /역할 지침 파일 없음: \.studio\/roles\/no-such-role\.md — studio sync를 돌렸는지 확인/);
+  assert.doesNotMatch(r.out, /org\.json/);
+  assert.doesNotMatch(promptOf(dir), /\[역할 지침\]/);
+  assert.match(r.out, /역할 no-such-role/);
+});
+
+test('경로 형식 persona: 파일 있으면 포함, 없으면 실행 시작 없이 중단', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [ROLE_GLM]);
+  const r = run([spec(dir, 'bypath.md', personaSpec('.studio/roles/gameplay-programmer.md'))], dir);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /역할 \.studio\/roles\/gameplay-programmer\.md/);
+  const p = promptOf(dir);
+  assert.match(p, /\[역할 지침\]/);
+  assert.match(p, /너는 이 스튜디오의 \.studio\/roles\/gameplay-programmer\.md 역할이다/);
+
+  const dir2 = makeRepo();
+  const log = path.join(TMP, 'log-nofile.json');
+  const r2 = run([spec(dir2, 'nofile.md', personaSpec('docs/roles/missing.md'))], dir2, { MOCK_LOG: log });
+  assert.notEqual(r2.code, 0);
+  assert.match(r2.err, /persona 지침 파일을 읽을 수 없습니다: docs\/roles\/missing\.md/);
+  assert.ok(!fs.existsSync(log), '작업자가 실행되지 않아야 함');
+  assert.ok(!fs.existsSync(path.join(dir2, '.glm/runs')), '실행 기록이 만들어지지 않아야 함');
+});
+
+test('경로 형식 persona: 저장소 루트 밖이면 거부', () => {
+  const dir = makeRepo();
+  const r = run([spec(dir, 'escape.md', personaSpec('../x.md'))], dir);
+  assert.notEqual(r.code, 0);
+  assert.match(r.err, /persona 경로가 저장소 루트를 벗어납니다: \.\.\/x\.md/);
+  const r2 = run([spec(dir, 'abs.md', personaSpec(path.join(TMP, 'outside.md')))], dir);
+  assert.notEqual(r2.code, 0);
+  assert.match(r2.err, /벗어납니다/);
+});
+
+test('깨진 org.json: 경고 한 줄, 실행은 계속', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [ROLE_GLM], { broken: true });
+  const log = path.join(TMP, 'log-broken.json');
+  const r = run([spec(dir, 'broken.md', personaSpec('gameplay-programmer'))], dir, { MOCK_LOG: log });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal((r.out.match(/org\.json/g) || []).length, 1, 'org.json 경고는 정확히 한 줄');
+  assert.match(r.out, /\.studio\/org\.json을 해석할 수 없어 조직도 기본값을 건너뜀/);
+  const L = readLog(log);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-5.3', '깨진 조직도는 무시 → 기본 모델');
+  assert.match(promptOf(dir), /\[역할 지침\]/, '지침 파일은 살아 있으므로 포함');
+});
+
+test('지침 32KB 초과: 자르고 경고', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [{ ...ROLE_GLM, file: `<!-- studio:generated x -->\nTRUNC-HEAD\n${'x'.repeat(40000)}\nTRUNC-TAIL\n` }]);
+  const r = run([spec(dir, 'big.md', personaSpec('gameplay-programmer'))], dir);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /역할 지침이 32KB를 넘어 잘렸음: \.studio\/roles\/gameplay-programmer\.md/);
+  const p = promptOf(dir);
+  assert.match(p, /TRUNC-HEAD/);
+  assert.doesNotMatch(p, /TRUNC-TAIL/);
+});
+
+test('--resume: persona 유지(후속 명세에 없으면 원 실행 것), 있으면 그쪽 우선', () => {
+  const dir = makeRepo();
+  makeStudio(dir, [ROLE_GLM, { id: 'level-designer', engine: 'glm', model: 'glm-4.8', effort: 'high', name: '레벨 디자이너' }]);
+  const l1 = path.join(TMP, 'log-rp1.json');
+  let r = run([spec(dir, 'rp1.md', personaSpec('gameplay-programmer'))], dir, { MOCK_LOG: l1 });
+  assert.equal(r.code, 0, r.out + r.err);
+  // 후속 명세에 persona 없음 → 원 실행 persona 상속
+  write(dir, '.glm/tasks/rp-fix.md', '# 후속\n추가로 한 줄 더.\n');
+  const l2 = path.join(TMP, 'log-rp2.json');
+  r = run(['--resume', 'latest', '.glm/tasks/rp-fix.md'], dir, { MOCK_LOG: l2 });
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.match(r.out, /이어서\(/);
+  assert.match(r.out, /· 역할 gameplay-programmer/);
+  let L = readLog(l2);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-4.7', '상속한 persona의 조직도 모델');
+  assert.match(L.stdin, /\[역할 지침\]/);
+  assert.match(promptAt(dir, 1), /\[역할 지침\]/);
+  assert.equal(metaAt(dir, 1).cfg.persona, 'gameplay-programmer');
+  // 후속 명세에 persona 있으면 그쪽 우선
+  write(dir, '.glm/tasks/rp-fix2.md', '---\npersona: level-designer\n---\n# 후속\n추가로 한 줄 더.\n');
+  const l3 = path.join(TMP, 'log-rp3.json');
+  r = run(['--resume', 'latest', '.glm/tasks/rp-fix2.md'], dir, { MOCK_LOG: l3 });
+  assert.equal(r.code, 0, r.out + r.err);
+  L = readLog(l3);
+  assert.equal(L.args[L.args.indexOf('--model') + 1], 'glm-4.8');
+  assert.match(promptAt(dir, 2), /이 스튜디오의 level-designer 역할이다/);
+  assert.equal(metaAt(dir, 2).cfg.persona, 'level-designer');
+});

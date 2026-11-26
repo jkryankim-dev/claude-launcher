@@ -12,13 +12,16 @@
 <header class="top">
   <div class="brand"><span class="mark" aria-hidden="true"><i></i><i></i><i></i></span><span class="app-name">Claude 런처</span><span id="ver" class="ver"></span></div>
   <div id="chips" class="chips"></div>
+  <nav id="view-switch" class="view-switch" aria-label="화면 전환">
+    <button type="button" data-v="projects" class="on">프로젝트 목록</button>
+    <button type="button" data-v="workspace">작업 공간</button>
+  </nav>
   <div class="top-actions">
     <button id="btn-update" class="btn">업데이트 확인<span id="upd-badge" class="badge" hidden></span></button>
     <button id="btn-settings" class="btn">설정</button>
   </div>
 </header>
 <div id="banner" class="banner" hidden></div>
-<nav id="tabs" class="tabs" hidden aria-label="열린 세션"></nav>
 <div id="view-projects" class="view">
   <section class="toolbar">
     <button id="btn-add" class="btn">폴더 추가</button>
@@ -32,7 +35,22 @@
   <main id="list" class="list"></main>
   <footer id="foot" class="foot"></footer>
 </div>
-<div id="view-term" class="view term-view" hidden></div>
+<div id="workspace" class="workspace" hidden>
+  <aside id="ws-side" class="ws-side" aria-label="지난 대화"></aside>
+  <div class="ws-mid">
+    <div class="ws-tabbar">
+      <button type="button" id="ws-menu" class="icon-btn" aria-label="대화 목록 펼치기/접기" title="대화 목록 펼치기/접기">☰</button>
+      <nav id="tabs" class="tabs" aria-label="열린 세션"></nav>
+      <button type="button" id="ws-panel-toggle" class="icon-btn" aria-label="위임 현황·조직도 펼치기/접기" title="위임 현황·조직도 펼치기/접기">◫</button>
+    </div>
+    <div id="ws-body" class="ws-body">
+      <div id="ws-empty" class="ws-empty"><p class="empty-title">새 대화를 시작하세요</p><p class="muted">왼쪽 지난 대화에서 이어하거나 위 ＋ 버튼으로 새 대화를 엽니다.</p></div>
+      <div id="hist-view" class="view hist-view" hidden></div>
+      <div id="view-term" class="view term-view" hidden></div>
+    </div>
+  </div>
+  <aside id="ws-panel" class="ws-panel" aria-label="위임 현황·조직도"></aside>
+</div>
 <div id="toast" class="toast" role="status" hidden></div>
 <dialog id="dlg" class="dlg"></dialog>
 <dialog id="dlg-out" class="dlg"></dialog>
@@ -40,7 +58,11 @@
 <script src="../../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
 <script src="../../node_modules/@xterm/addon-web-links/lib/addon-web-links.js"></script>
 <script src="../../node_modules/@xterm/addon-unicode11/lib/addon-unicode11.js"></script>
+<script src="lib/md.js"></script>
+<script src="lib/fmt.js"></script>
 <script src="terminal.js"></script>
+<script src="chat.js"></script>
+<script src="workspace.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

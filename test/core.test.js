@@ -222,6 +222,62 @@ test('config: updateProject — 원격 path·host/port 수정, 잘못된 값 무
   assert.equal(config.updateProject(c2, { id: c2.projects[0].id, path: 'C:\\dev\\moved' }).path, 'C:\\dev\\moved', '로컬 path 수정은 기존처럼 동작');
 });
 
+test('config: ext.studio — 기본값 상속·잘못된 형식·모르는 키 정리·addProject는 항상 false·updateProject 보존·옛 설정 왕복', () => {
+  const c = config.normalize({
+    projects: [
+      { path: 'C:\\dev\\a' },
+      { path: 'C:\\dev\\b', ext: { studio: true } },
+      { path: 'C:\\dev\\c', ext: { studio: 'yes' } },
+      { path: 'C:\\dev\\d', ext: 'x' },
+      { path: 'C:\\dev\\e', ext: { studio: true, other: 1 } },
+      { path: 'C:\\dev\\f', ext: null },
+    ],
+    defaults: { ext: { studio: true } },
+  });
+  assert.deepEqual(c.defaults.ext, { studio: true });
+  assert.deepEqual(c.projects[0].ext, { studio: true }, 'ext 없으면 기본값 상속');
+  assert.deepEqual(c.projects[1].ext, { studio: true });
+  assert.deepEqual(c.projects[2].ext, { studio: true }, 'boolean이 아닌 값은 base 값');
+  assert.deepEqual(c.projects[3].ext, { studio: true }, '깨진 ext는 base 값');
+  assert.deepEqual(c.projects[4].ext, { studio: true }, '모르는 ext 키는 버림');
+  assert.deepEqual(c.projects[5].ext, { studio: true }, 'null ext도 base 값');
+  const added = config.addProject(c, 'C:\\dev\\new');
+  assert.deepEqual(added.ext, { studio: false }, '기본값이 true여도 새 폴더는 false로 시작');
+  assert.deepEqual(config.addRemoteProject(c, { host: 'example-host', path: 'C:\\dev\\rr' }).ext, { studio: false }, '새 원격 폴더도 false');
+  const u1 = config.updateProject(c, { id: c.projects[1].id, mode: 'glm' });
+  assert.deepEqual(u1.ext, { studio: true }, 'ext 없는 갱신은 보존');
+  assert.deepEqual(config.updateProject(c, { id: c.projects[0].id, ext: { studio: true } }).ext, { studio: true });
+  assert.deepEqual(config.updateProject(c, { id: c.projects[0].id, ext: { studio: false } }).ext, { studio: false });
+  const f = path.join(tmp(), 'c.json');
+  config.save(f, c);
+  assert.deepEqual(config.load(f), c, '저장 → 다시 normalize해도 동일');
+});
+
+test('config: ext.studio 기본 — 옛 설정 파일(ext 없음)도 그대로 읽히고 openWith chat 허용', () => {
+  const old = config.normalize({ version: 1, setupDone: true, projects: [{ id: 'abcd1234', path: 'C:\\dev\\old', mode: 'claude' }], settings: { terminal: 'wt' } });
+  assert.deepEqual(old.defaults.ext, { studio: false });
+  assert.deepEqual(old.projects[0].ext, { studio: false });
+  const f = path.join(tmp(), 'old.json');
+  fs.writeFileSync(f, JSON.stringify(old)); // 옛 형식 파일을 그대로 쓰기
+  assert.deepEqual(config.load(f).projects[0].ext, { studio: false });
+  const c2 = config.normalize({ projects: [{ path: 'C:\\dev\\a', openWith: 'chat' }] });
+  assert.equal(c2.projects[0].openWith, 'chat', '열기 방식 chat 허용');
+  assert.deepEqual(c2.projects[0].ext, { studio: false });
+  assert.ok(config.OPEN_WITH.includes('chat'));
+});
+
+test('launch: 세션 파일에 ext·resume이 실리고 isSessionId는 UUID만 통과', () => {
+  const rid = '1f0e8d9a-2345-4bc8-8d9a-c0ffee123456';
+  assert.equal(launch.isSessionId(rid), true);
+  for (const bad of ['../x', 'not-a-uuid', '1f0e8d9a23454bc88d9ac0ffee12345', '', null, undefined, 123]) assert.equal(launch.isSessionId(bad), false);
+  const home = tmp();
+  const p = { id: 'sxp1', name: 'x', path: 'C:\\dev\\x', mode: 'split', openWith: 'inapp', extraArgs: '', ext: { studio: true }, main: { model: 'fable', effort: 'high' }, worker: { model: 'glm-5.3', effort: 'max' } };
+  const f = launch.writeSessionFile(home, p, { keyFile: 'k', resume: rid });
+  const s = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.deepEqual(s.ext, { studio: true });
+  assert.equal(s.resume, rid);
+});
+
 test('launch: 원격 프로젝트 — wt 인자(탭·분할·로컬 혼합)·consoleCommand·sessionTitle·sessionData', () => {
   const ctx = { node: 'node.exe', script: 's.mjs', wt: 'wt.exe', ssh: 'C:\\Windows\\System32\\OpenSSH\\ssh.exe', homeDir: 'C:\\Users\\main' };
   const mk = (id, r = null) => ({ id, name: `p${id}`, path: r ? 'C:\\dev\\foo' : `C:\\dev\\p${id}`, mode: 'split', remote: r, main: { model: 'fable', effort: 'high' }, worker: { model: 'glm-5.3', effort: 'max' } });

@@ -6,8 +6,8 @@ const crypto = require('node:crypto');
 const remote = require('./remote');
 
 const MODES = ['split', 'claude', 'glm'];
-const OPEN_WITH = ['inapp', 'tab', 'window', 'vscode'];
-const DEFAULTS = { mode: 'split', main: { model: 'fable', effort: 'medium' }, worker: { model: 'glm-5.3', effort: 'max' }, openWith: 'inapp', extraArgs: '' };
+const OPEN_WITH = ['inapp', 'tab', 'window', 'vscode', 'chat'];
+const DEFAULTS = { mode: 'split', main: { model: 'fable', effort: 'medium' }, worker: { model: 'glm-5.3', effort: 'max' }, openWith: 'inapp', extraArgs: '', ext: { studio: false } };
 const SETTINGS = { autoUpdate: true, terminal: 'wt', keepShell: true, claudeMd: true, githubToken: '', catalogUrl: '', zaiBaseUrl: 'https://api.z.ai/api/anthropic', glmConfigDir: '' };
 
 const str = (v, d) => (typeof v === 'string' && v.trim() ? v.trim() : d);
@@ -28,6 +28,7 @@ function profile(x, base) {
     worker: { model: str(x.worker?.model, base.worker.model), effort: str(x.worker?.effort, base.worker.effort) },
     openWith: OPEN_WITH.includes(x.openWith) ? x.openWith : base.openWith,
     extraArgs: typeof x.extraArgs === 'string' ? x.extraArgs.trim() : base.extraArgs,
+    ext: { studio: typeof x.ext?.studio === 'boolean' ? x.ext.studio : base.ext.studio }, // 모르는 ext 키는 버린다
   };
 }
 function models(list) {
@@ -67,7 +68,8 @@ function addProject(c, dir) {
   const abs = path.resolve(dir);
   const hit = c.projects.find(p => !p.remote && samePath(p.path, abs)); // 원격 프로젝트와는 비교하지 않는다(같은 경로 문자열이어도 다른 프로젝트)
   if (hit) return hit;
-  const p = { id: newId(), name: path.basename(abs) || abs, path: abs, ...clone(c.defaults) };
+  // 스튜디오 조직도는 남의 폴더에 파일을 심는 기능이다 — 기본값이 켜져 있어도 새 폴더는 항상 꺼진 상태로 시작한다.
+  const p = { id: newId(), name: path.basename(abs) || abs, path: abs, ...clone(c.defaults), ext: { studio: false } };
   c.projects.push(p);
   return p;
 }
@@ -80,7 +82,7 @@ function addRemoteProject(c, { host, user, port, path: remotePath, name } = {}) 
   const norm = s => String(s).replace(/\\/g, '/').toLowerCase();
   const hit = c.projects.find(p => p.remote && remote.sameTarget(p.remote, r) && norm(p.path) === norm(rp));
   if (hit) return hit;
-  const p = { id: newId(), name: str(name, remote.baseName(rp)), path: rp, ...clone(c.defaults), remote: r };
+  const p = { id: newId(), name: str(name, remote.baseName(rp)), path: rp, ...clone(c.defaults), ext: { studio: false }, remote: r };
   c.projects.push(p);
   return p;
 }

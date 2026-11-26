@@ -8,6 +8,8 @@ const { app, BrowserWindow, ipcMain, dialog, shell, nativeTheme, Menu } = requir
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 
 const config = require('./core/config');
 const catalog = require('./core/catalog');
@@ -18,9 +20,13 @@ const sync = require('./core/sync');
 const claudemd = require('./core/claudemd');
 const claudebin = require('./core/claudebin');
 const remote = require('./core/remote');
+const history = require('./core/history');
+const runs = require('./core/runs');
 const { runCapture, cleanEnv } = require('./core/proc');
 const { zaiRate } = require('./core/rate');
 const { createHost } = require('./core/ptyhost');
+const { createChatHost } = require('./core/chat');
+const { createBridge } = require('./core/bridge');
 const pkg = require('../package.json');
 
 // 개발 실행(npm start)에서만: CLAUDE_LAUNCHER_HOME으로 데이터 폴더를 바꿔 설치된 런처와 동시에 띄울 수 있다(중복 실행 잠금이 폴더 기준).
@@ -55,12 +61,17 @@ let autoUpdater = null;
 let ptyHost = null; // 런처 안 터미널 세션
 let ptyModule; // @lydell/node-pty (처음 쓸 때 불러옴)
 let ptyError = '';
+let chatHost = null; // 런처 안 채팅 세션(앱에 하나)
+let bridge = null; // IPC 본문(history/runs/studio/chat)
+let startSessionMod = null; // runtime/start-session.mjs(buildChatSession — 처음 쓸 때 동적 import)
+let studioMod = null; // runtime/studio.mjs(ensureStudio·validateOrg)
 let allowClose = false;
 const updateState = { app: { state: 'idle' }, catalog: { state: 'idle' } };
 
 const loadCfg = () => config.load(P.config);
 const saveCfg = c => config.save(P.config, c);
 function send(type, data = {}) { if (win && !win.isDestroyed()) win.webContents.send('event', { type, ...data }); }
+function sendRaw(ch, data) { if (win && !win.isDestroyed()) win.webContents.send(ch, data); }
 
 function repoInfo() {
   const url = String((pkg.repository && (pkg.repository.url || pkg.repository)) || '');
@@ -126,15 +137,15 @@ function remoteRes() {
   if (claudemd.has(P.claudeMd)) { try { snippet = fs.readFileSync(P.snippet, 'utf8'); } catch { snippet = null; } }
   return { runtimeDir: P.bundledRuntime, skillDir: P.bundledSkill, snippet };
 }
-/** 원격에 runtime·스킬·세션 JSON·CLAUDE.md 영역·z.ai 키를 심는다. 성공하면 ssh.exe 경로를 돌려준다 */
-function prepareRemote(p, c) {
+/** 원격에 runtime·스킬·세션 JSON·CLAUDE.md 영역·z.ai 키를 심는다. 성공하면 ssh.exe 경로를 돌려준다. extra는 세션에 실을 추가 값(resume 등) */
+function prepareRemote(p, c, extra = {}) {
   let run = remotePreparing.get(p.id);
   if (run) return run;
   run = (async () => {
     const ssh = await remote.findSsh();
     if (!ssh) throw new Error(SSH_MISSING);
     const key = p.mode !== 'claude' ? (secrets.loadKey(P.keyFile) || null) : null; // 평문 키는 이 인자로만 감
-    await remote.prepareOpen(p, { res: remoteRes(), sessionExtra: sessionExtra(c), key, ssh });
+    await remote.prepareOpen(p, { res: remoteRes(), sessionExtra: { ...sessionExtra(c), ...extra }, key, ssh });
     return ssh;
   })().finally(() => { remotePreparing.delete(p.id); });
   remotePreparing.set(p.id, run);
@@ -152,7 +163,7 @@ async function openProjects(ids, layout) {
     return { ok: false, message: 'GLM만 모드는 z.ai 키가 필요합니다. 설정에서 키를 저장하세요' };
   }
   if (!lastChecks) await refreshChecks();
-  const needNode = list.some(p => !p.remote && (layout === 'split' || p.openWith !== 'vscode')); // 원격은 로컬 node 없이 ssh만으로 열린다
+  const needNode = list.some(p => !p.remote && (layout === 'split' || (p.openWith !== 'vscode' && p.openWith !== 'chat'))); // 원격은 ssh만, 채팅은 claude 실행 파일만 쓴다
   if (needNode && !lastChecks.node) return { ok: false, message: 'Node.js를 찾을 수 없습니다. 설치한 뒤 설정에서 다시 점검하세요' };
   const failed = [];
   const ready = new Set();
@@ -165,15 +176,19 @@ async function openProjects(ids, layout) {
   if (!openList.length) return { ok: false, message: failed.join('\n') || '열 수 있는 폴더가 없습니다' };
   if (!fs.existsSync(P.sessionScript)) sync.syncDir(P.bundledRuntime, P.runtime);
   const extra = sessionExtra(c);
-  for (const p of openList) if (!p.remote) launch.writeSessionFile(HOME, p, extra);
+  for (const p of openList) if (!p.remote && p.openWith !== 'chat') launch.writeSessionFile(HOME, p, extra); // 채팅은 세션 파일 없이 브리지가 환경을 만든다
   const ctx = { node: lastChecks.node || 'node', script: P.sessionScript, wt: lastChecks.wt };
   if (openList.some(p => p.remote)) { ctx.ssh = ssh || await remote.findSsh(); ctx.homeDir = os.homedir(); }
+  // 로컬 채팅 프로젝트는 터미널을 띄우지 않고 렌더러에 맡긴다(렌더러가 chatOpen을 호출한다)
+  const chatOpens = openList.filter(p => !p.remote && p.openWith === 'chat');
+  const termList = openList.filter(p => !chatOpens.includes(p));
+  for (const p of chatOpens) sendRaw('chat:request-open', { projectId: p.id });
   let r = { ok: true };
-  if (layout === 'split' && openList.length > 1) {
-    r = await launch.openTerminal(openList, ctx, { layout: 'split', terminal: c.settings.terminal });
-  } else {
-    for (const p of openList) {
-      const ow = p.remote && p.openWith === 'vscode' ? 'inapp' : p.openWith; // 원격은 VS Code 대신 터미널로
+  if (termList.length && layout === 'split' && termList.length > 1) {
+    r = await launch.openTerminal(termList, ctx, { layout: 'split', terminal: c.settings.terminal });
+  } else if (termList.length) {
+    for (const p of termList) {
+      const ow = p.remote && (p.openWith === 'vscode' || p.openWith === 'chat') ? 'inapp' : p.openWith; // 원격은 VS Code·채팅 대신 터미널로(설정값 보존)
       const how = layout === 'wt' || ow === 'inapp' ? 'tab' : ow; // 'wt' = 런처 안이 안 될 때 터미널 탭으로 대신 열기
       r = how === 'vscode'
         ? await launch.openVSCode(p)
@@ -198,15 +213,17 @@ function host() {
   if (!ptyHost) ptyHost = createHost({ spawnPty: (f, a, o) => getPty().spawn(f, a, o), send: (ch, d) => { if (win && !win.isDestroyed()) win.webContents.send(ch, d); } });
   return ptyHost;
 }
-async function termOpen(projectId, cols, rows) {
+async function termOpen(projectId, cols, rows, resume) {
   const c = loadCfg();
   const p = c.projects.find(x => x.id === projectId);
   if (!p) return { ok: false, message: '프로젝트를 찾을 수 없습니다' };
   if (!p.remote && !fs.existsSync(p.path)) return { ok: false, message: `폴더가 없습니다: ${p.path}` };
   if (p.mode === 'glm' && !secrets.hasKey(P.keyFile)) return { ok: false, message: 'GLM만 모드는 z.ai 키가 필요합니다. 설정에서 키를 저장하세요' };
+  const extra = { ...sessionExtra(c) };
+  if (resume !== undefined && resume !== null && resume !== '' && launch.isSessionId(resume)) extra.resume = resume; // UUID가 아니면 세션에 싣지 않는다
   let ssh = null;
   if (p.remote) {
-    try { ssh = await prepareRemote(p, c); }
+    try { ssh = await prepareRemote(p, c, extra.resume ? { resume: extra.resume } : {}); }
     catch (e) { return { ok: false, message: String((e && e.message) || e) }; } // 원격 준비 실패는 wt로 폴백해도 같으니 오류만 보낸다
   } else {
     if (!lastChecks) await refreshChecks();
@@ -225,7 +242,7 @@ async function termOpen(projectId, cols, rows) {
     }
   }
   if (!fs.existsSync(P.sessionScript)) sync.syncDir(P.bundledRuntime, P.runtime);
-  launch.writeSessionFile(HOME, p, sessionExtra(c));
+  launch.writeSessionFile(HOME, p, extra);
   try {
     const s = host().open({ file: lastChecks.node, args: [P.sessionScript, '--project', p.id], cwd: p.path, env, cols: colsN, rows: rowsN, meta });
     return { ok: true, ...s };
@@ -238,6 +255,57 @@ function confirmEndSessions(what) {
   if (!n) return true;
   const r = dialog.showMessageBoxSync(win, { type: 'question', buttons: [what, '취소'], defaultId: 1, cancelId: 1, title: 'Claude 런처', message: `런처 안에서 실행 중인 세션 ${n}개가 함께 끝납니다.`, detail: `${what}할까요?` });
   return r === 0;
+}
+
+// ───────── 런처 안 채팅·기록 브리지 ─────────
+function chats() {
+  if (!chatHost) {
+    chatHost = createChatHost({
+      loadSdk: () => import('@anthropic-ai/claude-agent-sdk'),
+      onEvent: ev => sendRaw('chat:event', ev),
+    });
+  }
+  return chatHost;
+}
+async function loadStartSession() {
+  if (!startSessionMod) {
+    if (!fs.existsSync(P.sessionScript)) sync.syncDir(P.bundledRuntime, P.runtime);
+    startSessionMod = await import(pathToFileURL(P.sessionScript).href);
+  }
+  return startSessionMod;
+}
+function loadStudioMod() {
+  if (!studioMod) {
+    if (!fs.existsSync(path.join(P.runtime, 'studio.mjs'))) sync.syncDir(P.bundledRuntime, P.runtime);
+    studioMod = import(pathToFileURL(path.join(P.runtime, 'studio.mjs')).href);
+  }
+  return studioMod;
+}
+function bridgeApi() {
+  if (!bridge) {
+    bridge = createBridge({
+      getConfig: loadCfg,
+      history,
+      runs,
+      chatHost: chats(),
+      getStudio: () => loadStudioMod(),
+      getBuildChat: async () => (await loadStartSession()).buildChatSession,
+      sessionExtra: () => sessionExtra(loadCfg()),
+      resolveClaudeExe: () => claudebin.resolveNative(),
+      loadKey: () => secrets.loadKey(P.keyFile),
+      hasKey: () => secrets.hasKey(P.keyFile),
+      newChatId: () => 'c' + crypto.randomBytes(4).toString('hex'),
+      envBase: cleanEnv(process.env),
+      home: os.homedir(),
+      notifyRuns: d => sendRaw('runs:changed', d),
+      warn: m => console.warn(m),
+    });
+  }
+  return bridge;
+}
+function closeChats() {
+  if (chatHost) chatHost.closeAll();
+  if (bridge) bridge.closeAll();
 }
 
 // ───────── 도구 ─────────
@@ -479,12 +547,32 @@ function registerIpc() {
     saveCfg(c);
     return getState();
   });
-  h('term:open', (pid, cols, rows) => termOpen(pid, cols, rows));
+  h('term:open', (pid, cols, rows, resume) => termOpen(pid, cols, rows, resume));
   h('term:attach', id => (ptyHost ? ptyHost.attach(id) : null));
   h('term:kill', id => (ptyHost ? ptyHost.kill(id) : false));
   h('term:list', () => (ptyHost ? ptyHost.list() : []));
   ipcMain.on('term:input', (_e, id, data) => { if (ptyHost) ptyHost.input(id, data); });
   ipcMain.on('term:resize', (_e, id, cols, rows) => { if (ptyHost) ptyHost.resize(id, cols, rows); });
+  // 대화 기록·GLM 실행 기록·스튜디오·채팅 — 던지지 않는 핸들러(오류는 { ok:false, error })
+  const hs = (ch, fn) => ipcMain.handle(ch, async (_e, ...a) => { try { return await fn(...a); } catch (e) { return { ok: false, error: String((e && e.message) || e) }; } });
+  const B = () => bridgeApi();
+  hs('history:list', (projectId, opts) => B().historyList(projectId, opts));
+  hs('history:read', (projectId, sessionId, opts) => B().historyRead(projectId, sessionId, opts));
+  hs('history:search', (projectId, query) => B().historySearch(projectId, query));
+  hs('runs:list', projectId => B().runsList(projectId));
+  hs('runs:read', (projectId, runId) => B().runsRead(projectId, runId));
+  hs('runs:watch', projectId => B().runsWatch(projectId));
+  hs('runs:unwatch', projectId => B().runsUnwatch(projectId));
+  hs('studio:org', projectId => B().studioOrg(projectId));
+  hs('chat:open', d => B().chatOpen(d));
+  hs('chat:send', (chatId, d) => B().chatSend(chatId, d));
+  hs('chat:respond', (chatId, requestId, answer) => B().chatRespond(chatId, requestId, answer));
+  hs('chat:interrupt', chatId => B().chatInterrupt(chatId));
+  hs('chat:close', chatId => B().chatClose(chatId));
+  hs('chat:setModel', (chatId, model) => B().chatSetModel(chatId, model));
+  hs('chat:setPermissionMode', (chatId, mode) => B().chatSetPermissionMode(chatId, mode));
+  hs('chat:commands', chatId => B().chatCommands(chatId));
+  hs('chat:list', () => B().chatList());
 }
 
 // ───────── 창·수명 ─────────
@@ -504,13 +592,14 @@ function createWindow(note) {
     if (!confirmEndSessions('닫기')) { e.preventDefault(); return; }
     allowClose = true;
     if (ptyHost) ptyHost.killAll();
+    closeChats(); // 채팅 세션·실행 기록 감시도 함께 닫는다
   });
   win.on('closed', () => { win = null; });
 }
 function start() {
   app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
   app.on('window-all-closed', () => app.quit());
-  app.on('before-quit', () => { if (ptyHost) ptyHost.killAll(); });
+  app.on('before-quit', () => { if (ptyHost) ptyHost.killAll(); closeChats(); });
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null);
     fs.mkdirSync(HOME, { recursive: true });
